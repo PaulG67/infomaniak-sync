@@ -22,7 +22,11 @@ Danach in der Unraid-UI:
 4. **Apply**
 5. WebUI: `http://UNRAID-IP:8794`
 
-kDrive-ID, E-Mail und Anwendungspasswort kannst du im Template eintragen oder später unter **Verbindung** speichern. Ein Speichern in der Weboberfläche hat danach Vorrang. Zurück auf die Container-Parameter geht über die Schaltfläche in der Verbindung.
+Unter **Verbindung** wählst du entweder die vorhandene rclone-Datei oder eigene Zugangsdaten.
+
+Die rclone-Datei ist im Template vorausgefüllt: `/boot/config/plugins/rclone/.rclone.conf`, Remote `Infomaniak` (der Eintrag `[Infomaniak]`). Die WebUI listet die weiteren WebDAV-Einträge derselben Datei. Dabei werden keine zweiten Zugangsdaten angelegt. kDrive-ID, E-Mail und Anwendungspasswort bleiben leer, solange diese Datei verwendet wird.
+
+Eigene Zugangsdaten trägst du im Template oder unter **Verbindung** ein. Ein Speichern in der Weboberfläche hat danach Vorrang. Zurück auf die Container-Parameter geht über die Schaltfläche in der Verbindung.
 
 Die kDrive-ID ist die Zahl nach `/drive/` in der Adresse, zum Beispiel `123456` bei `…/kdrive/app/drive/123456/`.
 
@@ -60,9 +64,11 @@ services:
       - KDRIVE_ID=123456
       - KDRIVE_USER=name@example.com
       - KDRIVE_PASSWORD=anwendungspasswort
+      - RCLONE_REMOTE=Infomaniak
     volumes:
       - /mnt/user/appdata/infomaniak-sync:/config
       - /mnt/user:/shares
+      - /boot/config/plugins/rclone/.rclone.conf:/rclone/rclone.conf:ro
 ```
 
 ## Image

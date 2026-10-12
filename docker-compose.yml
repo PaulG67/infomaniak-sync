@@ -14,8 +14,10 @@ services:
       - KDRIVE_ID=
       - KDRIVE_USER=
       - KDRIVE_PASSWORD=
+      - RCLONE_REMOTE=Infomaniak
       - WEB_PASSWORD=
     volumes:
       - /mnt/user/appdata/infomaniak-sync:/config
       - /mnt/user:/shares
+      - /boot/config/plugins/rclone/.rclone.conf:/rclone/rclone.conf:ro
     restart: unless-stopped

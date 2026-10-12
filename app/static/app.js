@@ -75,7 +75,9 @@ async function api(path, options = {}) {
 async function reload() {
   state = await api("/api/state");
   const meta = document.getElementById("header-meta");
-  const link = state.connection.password_set ? "kDrive verbunden" : "kDrive offen";
+  const link = state.connection.ready
+    ? (state.connection.mode === "rclone" ? state.connection.rclone_remote : "kDrive verbunden")
+    : "kDrive offen";
   meta.textContent = state.rclone ? `${link} · ${state.rclone}` : link;
   document.querySelectorAll(".tabs button").forEach((button) => {
     button.classList.toggle("active", button.dataset.tab === tabFor(parseRoute()));
@@ -117,8 +119,11 @@ function banners() {
   if (!state.shares_ok || state.share_count === 0) {
     parts.push(`<div class="banner warn">Keine Shares sichtbar. Im Unraid-Template den Pfad Shares auf /mnt/user setzen.</div>`);
   }
-  if (!state.connection.password_set) {
-    parts.push(`<div class="banner info">Die kDrive-Verbindung fehlt noch. Unter Verbindung eintragen oder die Container-Parameter setzen.</div>`);
+  if (!state.connection.ready) {
+    const missing = state.connection.mode === "rclone"
+      ? `Die rclone-Verbindung fehlt noch. Unter Verbindung einen WebDAV-Eintrag wählen, zum Beispiel ${esc(state.connection.example_remote)}.`
+      : "Die kDrive-Verbindung fehlt noch. Unter Verbindung die rclone-Datei wählen oder Zugangsdaten eintragen.";
+    parts.push(`<div class="banner info">${missing}</div>`);
   }
   if (!state.rclone) parts.push(`<div class="banner warn">rclone wurde im Container nicht gefunden.</div>`);
   return parts.join("");
@@ -376,15 +381,40 @@ function renderConnection() {
     : connection.source === "env"
       ? "Zuletzt aus den Container-Parametern übernommen. Ein Speichern hier hat Vorrang, bis du zurücksetzt."
       : "Noch nicht eingerichtet.";
+  const remotes = connection.remotes || [];
+  const mode = connection.mode === "manual" ? "manual" : (connection.mode === "rclone" || remotes.length ? "rclone" : "manual");
+  const selected = connection.rclone_remote && remotes.some((item) => item.name === connection.rclone_remote)
+    ? connection.rclone_remote
+    : "";
+  const remoteOptions = remotes.map((item) =>
+    `<option value="${esc(item.name)}" ${item.name === selected ? "selected" : ""}>${esc(item.name)}</option>`).join("");
+  const fileState = connection.rclone_present
+    ? "Die rclone-Datei ist eingebunden. Es werden die Zugangsdaten daraus verwendet, keine zweiten."
+    : `Die rclone-Datei ist nicht eingebunden. Im Template den Pfad setzen, zum Beispiel ${connection.example_path}.`;
   appEl.innerHTML = `${banners()}
     <form id="connection-form" class="card form">
-      <p class="hint">kDrive-ID ist die Zahl nach <strong>/drive/</strong> in der Adresse, zum Beispiel bei <span>…/kdrive/app/drive/123456/</span> die 123456. Benutzer ist die E-Mail. Passwort ist ein Anwendungspasswort aus dem Infomaniak-Manager (Profil → Sicherheit), nötig bei Zwei-Faktor-Anmeldung.</p>
-      <p class="hint">WebDAV gibt es nicht bei kSuite Free, my kSuite und my kSuite+. Dafür brauchst du ein kDrive mit WebDAV, zum Beispiel kDrive Solo oder kSuite Pro. <a href="https://www.infomaniak.com/en/support/faq/2409/connect-to-kdrive-via-webdav" target="_blank" rel="noreferrer">Infomaniak-Anleitung</a></p>
+      <label>Verbindung${fieldSelect("mode", [
+        ["rclone", "Vorhandene rclone-Verbindung"],
+        ["manual", "Eigene Zugangsdaten"],
+      ], mode)}</label>
+      <div id="rclone-fields">
+        <p class="hint">Datei des Unraid-rclone-Plugins, zum Beispiel <span>${esc(connection.example_path)}</span> mit dem Eintrag <strong>[${esc(connection.example_remote)}]</strong> (<span>type = webdav</span>, <span>url</span>, <span>user</span>, <span>pass</span>). Für kDrive Solo wird <span>vendor = other</span> ergänzt, falls er fehlt. Nach einer Änderung der Datei den Container neu starten.</p>
+        <p class="meta">${esc(fileState)}</p>
+        <label>WebDAV-Eintrag<select name="rclone_remote" ${remotes.length ? "" : "disabled"}>
+          <option value="">${remotes.length ? "Eintrag wählen" : "Keine WebDAV-Einträge"}</option>
+          ${remoteOptions}
+        </select></label>
+        <p class="meta" id="rclone-meta"></p>
+      </div>
+      <div id="manual-fields">
+        <p class="hint">Dieselben Angaben wie im rclone-Eintrag <strong>[Infomaniak]</strong>: <span>type = webdav</span>, <span>url</span>, <span>user</span>, <span>pass</span>. kDrive Solo enthält WebDAV. Die Adresse ist zum Beispiel <span>https://260259.connect.kdrive.infomaniak.com</span>, der Benutzer die E-Mail. <a href="https://www.infomaniak.com/en/support/faq/2409/connect-to-kdrive-via-webdav" target="_blank" rel="noreferrer">Infomaniak-Anleitung</a></p>
+        <label>WebDAV-Adresse<input name="webdav_url" value="${esc(connection.kdrive_id ? `https://${connection.kdrive_id}.connect.kdrive.infomaniak.com` : "")}" placeholder="https://260259.connect.kdrive.infomaniak.com" spellcheck="false" /></label>
+        <p class="meta">Adresse: <span id="kdrive-url">${esc(connection.kdrive_id ? `https://${connection.kdrive_id}.connect.kdrive.infomaniak.com` : "—")}</span></p>
+        <label>E-Mail<input name="kdrive_user" type="email" value="${esc(connection.kdrive_user)}" autocomplete="username" placeholder="user aus der rclone-Datei" /></label>
+        <label>Passwort<input name="password" type="password" autocomplete="new-password" placeholder="${connection.password_set ? "gesetzt, leer lassen zum Behalten" : "Anwendungspasswort oder pass aus rclone"}" /></label>
+        <label class="inline check"><input type="checkbox" name="password_obscured" ${connection.password_obscured ? "checked" : ""} /> Das ist der pass-Wert aus der rclone-Datei, nicht das Klartext-Passwort</label>
+      </div>
       <p class="meta">${esc(source)}</p>
-      <label>kDrive-ID<input name="kdrive_id" inputmode="numeric" value="${esc(connection.kdrive_id)}" /></label>
-      <p class="meta">Adresse: <span id="kdrive-url">${esc(connection.url || "—")}</span></p>
-      <label>E-Mail<input name="kdrive_user" type="email" value="${esc(connection.kdrive_user)}" autocomplete="username" /></label>
-      <label>Anwendungspasswort<input name="password" type="password" autocomplete="new-password" placeholder="${connection.password_set ? "gesetzt, leer lassen zum Behalten" : ""}" /></label>
       <div class="row">
         <button type="submit" class="primary">Speichern</button>
         <button type="button" data-act="test-connection">Verbindung testen</button>
@@ -398,6 +428,21 @@ function renderConnection() {
       <label>Gleichzeitige Aufträge<input name="max_parallel" type="number" min="1" max="3" value="${esc(state.settings.max_parallel)}" /></label>
       <button type="submit" class="primary">Einstellungen speichern</button>
     </form>`;
+  syncConnectionFields();
+}
+
+function syncConnectionFields() {
+  const form = document.getElementById("connection-form");
+  if (!form) return;
+  const mode = form.querySelector("[name=mode]").value;
+  document.getElementById("rclone-fields").hidden = mode !== "rclone";
+  document.getElementById("manual-fields").hidden = mode !== "manual";
+  const select = form.querySelector("[name=rclone_remote]");
+  const meta = document.getElementById("rclone-meta");
+  const remote = (state.connection.remotes || []).find((item) => item.name === select.value);
+  meta.textContent = remote
+    ? `Adresse: ${remote.url || "—"} · Benutzer: ${remote.user || "—"}`
+    : "Kein WebDAV-Eintrag gewählt.";
 }
 
 function renderHistory() {
@@ -629,14 +674,20 @@ async function onSubmit(event) {
   }
   if (form.id === "connection-form") {
     event.preventDefault();
+    const mode = form.mode.value;
+    const body = mode === "rclone"
+      ? { mode, rclone_remote: form.rclone_remote.value }
+      : {
+          mode,
+          webdav_url: form.webdav_url.value.trim(),
+          kdrive_user: form.kdrive_user.value.trim(),
+          password: form.password.value,
+          password_obscured: form.password_obscured.checked,
+        };
     try {
       await api("/api/connection", {
         method: "POST",
-        body: JSON.stringify({
-          kdrive_id: form.kdrive_id.value.trim(),
-          kdrive_user: form.kdrive_user.value.trim(),
-          password: form.password.value,
-        }),
+        body: JSON.stringify(body),
       });
       form.password.value = "";
       await reload();
@@ -685,10 +736,14 @@ function onInput(event) {
     syncVisibility();
     schedulePreview();
   }
-  if (event.target.name === "kdrive_id") {
+  if (event.target.closest("#connection-form")) syncConnectionFields();
+  if (event.target.name === "webdav_url") {
     const url = document.getElementById("kdrive-url");
-    const id = event.target.value.trim();
-    url.textContent = /^\d+$/.test(id) ? `https://${id}.connect.kdrive.infomaniak.com` : "—";
+    if (!url) return;
+    const raw = event.target.value.trim().replace(/\/$/, "");
+    const fromHost = raw.match(/^https:\/\/(\d{1,15})\.connect\.kdrive\.infomaniak\.com$/i);
+    const id = /^\d{1,15}$/.test(raw) ? raw : (fromHost ? fromHost[1] : "");
+    url.textContent = id ? `https://${id}.connect.kdrive.infomaniak.com` : "—";
   }
 }
 

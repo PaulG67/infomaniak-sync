@@ -19,6 +19,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("KDRIVE_ID", "")
     monkeypatch.setenv("KDRIVE_USER", "")
     monkeypatch.setenv("KDRIVE_PASSWORD", "")
+    monkeypatch.setenv("RCLONE_REMOTE", "")
+    monkeypatch.setenv("RCLONE_CONFIG_FILE", str(tmp_path / "missing-rclone.conf"))
     monkeypatch.setenv("TZ", "Europe/Zurich")
     return {"config": config, "shares": shares}
 
@@ -92,6 +94,106 @@ def test_login_gate(env, monkeypatch):
     assert client.post("/login", data={"user": "admin", "password": "no"}).status_code == 401
     assert client.post("/login", data={"user": "admin", "password": "geheim"}).status_code == 302
     assert client.get("/api/state").status_code == 200
+
+
+def test_rclone_file_is_selectable_without_second_password(env, monkeypatch):
+    conf = env["shares"].parent / "plugin.conf"
+    conf.write_text(
+        "\n".join(
+            [
+                "[Infomaniak]",
+                "type = webdav",
+                "url = https://123456.connect.kdrive.infomaniak.com",
+                "vendor = other",
+                "user = ada@example.com",
+                "pass = SECRET-ONE",
+                "",
+                "[Anderer]",
+                "type = webdav",
+                "url = https://999.connect.kdrive.infomaniak.com",
+                "user = bob@example.com",
+                "pass = SECRET-TWO",
+                "",
+                "[Lokal]",
+                "type = local",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RCLONE_CONFIG_FILE", str(conf))
+    monkeypatch.setenv("RCLONE_REMOTE", "Infomaniak")
+    monkeypatch.setenv("KDRIVE_ID", "777")
+    monkeypatch.setenv("KDRIVE_USER", "other@example.com")
+    monkeypatch.setenv("KDRIVE_PASSWORD", "other-secret")
+    client = create_app().test_client()
+    state = client.get("/api/state").get_json()
+    assert state["connection"]["mode"] == "rclone"
+    assert state["connection"]["ready"] is True
+    assert state["connection"]["rclone_remote"] == "Infomaniak"
+    assert [item["name"] for item in state["connection"]["remotes"]] == ["Infomaniak", "Anderer"]
+    blob = str(state)
+    assert "SECRET-ONE" not in blob
+    assert "SECRET-TWO" not in blob
+    assert "other-secret" not in blob
+    assert not (env["config"] / "kdrive.password").exists()
+    preview = client.post("/api/preview", json={"job": {"name": "Fotos", "mappings": [{"local": "photos", "remote": "Fotos"}]}})
+    command = preview.get_json()["commands"][0]
+    assert "Infomaniak:Fotos" in command
+    active = (env["config"] / "rclone-active.conf").read_text(encoding="utf-8")
+    assert "vendor = other" in active
+    assert "url = https://123456.connect.kdrive.infomaniak.com" in active
+    assert "pass = SECRET-ONE" in active
+    assert str(conf) not in command
+    assert "other-secret" not in command
+    assert "SECRET-ONE" not in blob
+    switched = client.post("/api/connection", json={"mode": "rclone", "rclone_remote": "Anderer"})
+    assert switched.status_code == 200
+    assert switched.get_json()["connection"]["rclone_remote"] == "Anderer"
+    assert switched.get_json()["connection"]["user"] == "bob@example.com"
+    missing = client.post("/api/connection", json={"mode": "rclone", "rclone_remote": "Lokal"})
+    assert missing.status_code == 400
+    manual = client.post(
+        "/api/connection",
+        json={"mode": "manual", "kdrive_id": "123456", "kdrive_user": "ada@example.com", "password": "ui-secret"},
+    )
+    assert manual.status_code == 200
+    again = create_app().test_client()
+    assert again.get("/api/state").get_json()["connection"]["mode"] == "manual"
+    reset = again.post("/api/connection/reset-env")
+    assert reset.status_code == 200
+    body = reset.get_json()["connection"]
+    assert body["mode"] == "rclone"
+    assert body["rclone_remote"] == "Infomaniak"
+    assert "ui-secret" not in str(body)
+
+
+def test_manual_connection_accepts_rclone_url_and_obscured_pass(env):
+    client = create_app().test_client()
+    saved = client.post(
+        "/api/connection",
+        json={
+            "mode": "manual",
+            "webdav_url": "https://260259.connect.kdrive.infomaniak.com",
+            "kdrive_user": "paul@gehring.li",
+            "password": "OBSCURED-PASS",
+            "password_obscured": True,
+        },
+    )
+    assert saved.status_code == 200, saved.get_json()
+    body = saved.get_json()["connection"]
+    assert body["kdrive_id"] == "260259"
+    assert body["kdrive_user"] == "paul@gehring.li"
+    assert body["url"] == "https://260259.connect.kdrive.infomaniak.com"
+    assert body["password_obscured"] is True
+    assert body["ready"] is True
+    assert "OBSCURED-PASS" not in str(body)
+    conf = (env["config"] / "rclone.conf").read_text(encoding="utf-8")
+    assert "type = webdav" in conf
+    assert "vendor = other" in conf
+    assert "url = https://260259.connect.kdrive.infomaniak.com" in conf
+    assert "user = paul@gehring.li" in conf
+    assert "pass = OBSCURED-PASS" in conf
 
 
 def test_run_requires_connection(env):

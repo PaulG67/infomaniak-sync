@@ -61,8 +61,7 @@ class Runner:
         effective_resync = resync or (dry_run and engine.needs_resync(job))
         if engine.needs_resync(job) and not dry_run and not resync:
             raise ValueError("Beidseitig braucht zuerst einen Erstabgleich")
-        if not self.store.password_set() or not self.store.conf_path.is_file():
-            raise ValueError("kDrive-Verbindung ist nicht eingerichtet")
+        self.store.require_backend()
         now = datetime.now(self.tz)
         run_id = str(uuid.uuid4())
         log_path = self.store.config_dir / "logs" / f"{run_id}.log"
@@ -166,16 +165,18 @@ class Runner:
             if job["existing"] == "version" or (job["mode"] == "bisync" and resync):
                 slug = engine.slugify(job["name"], job["id"])
                 (self.store.config_dir / "versions" / slug / stamp).mkdir(parents=True, exist_ok=True)
+            backend = self.store.require_backend()
             commands = engine.build_commands(
                 job,
                 shares_root=self.shares_root,
-                config_path=self.store.conf_path,
+                config_path=backend["config_path"],
                 filter_path=filter_path,
                 workdir_base=self.store.config_dir / "bisync",
                 version_root=self.store.config_dir / "versions",
                 dry_run=dry_run,
                 resync=resync,
                 stamp=stamp,
+                remote_name=backend["remote"],
             )
             with log_path.open("w", encoding="utf-8") as handle:
                 handle.write(f"# {job['name']}\n")
@@ -187,8 +188,7 @@ class Runner:
                 for argv in commands:
                     handle.write("# " + engine.format_command(argv) + "\n")
                 handle.write("\n")
-            env = os.environ.copy()
-            env["RCLONE_CONFIG_KDRIVE_PASS"] = self.store.password()
+            env = self.store.rclone_env()
             for argv in commands:
                 if job["id"] in self._cancel:
                     status = "cancelled"
@@ -214,7 +214,7 @@ class Runner:
 
                 self.store.update_job(job["id"], mark)
             if status == "ok" and not dry_run and int(job.get("version_keep_days") or 0) > 0:
-                self._prune(job, log_path, env)
+                self._prune(job, log_path, env, backend)
             summary = engine.summarize_log(log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else "")
             if status == "cancelled":
                 summary = summary or "abgebrochen"
@@ -273,7 +273,7 @@ class Runner:
                 pass
         proc.terminate()
 
-    def _prune(self, job: dict, log_path: Path, env: dict) -> None:
+    def _prune(self, job: dict, log_path: Path, env: dict, backend: dict) -> None:
         keep = int(job.get("version_keep_days") or 0)
         slug = engine.slugify(job["name"], job["id"])
         now = datetime.now(self.tz)
@@ -286,14 +286,16 @@ class Runner:
                     import shutil
                     shutil.rmtree(target, ignore_errors=True)
         remote_root = f"{job['version_dir'].strip('/')}/{slug}"
+        remote_name = backend["remote"]
+        config_path = str(backend["config_path"])
         try:
             proc = subprocess.run(
                 [
                     "rclone",
                     "lsf",
-                    f"kdrive:{remote_root}",
+                    engine.remote_spec(remote_name, remote_root),
                     "--config",
-                    str(self.store.conf_path),
+                    config_path,
                     "--dirs-only",
                     "--max-depth",
                     "1",
@@ -311,7 +313,7 @@ class Runner:
         names = [line.strip() for line in (proc.stdout or "").splitlines()]
         for name in engine.old_stamps(names, now=now, keep_days=keep, tz=self.tz):
             subprocess.run(
-                ["rclone", "purge", f"kdrive:{remote_root}/{name}", "--config", str(self.store.conf_path)],
+                ["rclone", "purge", engine.remote_spec(remote_name, f"{remote_root}/{name}"), "--config", config_path],
                 capture_output=True,
                 text=True,
                 timeout=300,
@@ -321,10 +323,8 @@ class Runner:
 
 
 def probe(store: Store, args: list[str], timeout: int = 40) -> tuple[int, str]:
-    if not store.password_set() or not store.conf_path.is_file():
-        raise ValueError("kDrive-Verbindung ist nicht eingerichtet")
-    env = os.environ.copy()
-    env["RCLONE_CONFIG_KDRIVE_PASS"] = store.password()
+    store.require_backend()
+    env = store.rclone_env()
     try:
         proc = subprocess.run(
             args,

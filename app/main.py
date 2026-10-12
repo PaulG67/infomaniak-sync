@@ -67,13 +67,15 @@ def create_app() -> Flask:
     web_user = os.environ.get("WEB_USER") or "admin"
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    store = Store(config_dir)
+    external_config = Path(os.environ.get("RCLONE_CONFIG_FILE", "/rclone/rclone.conf") or "/rclone/rclone.conf")
+    store = Store(config_dir, external_config=external_config)
     env_warning = ""
     try:
         store.apply_env(
             os.environ.get("KDRIVE_ID", ""),
             os.environ.get("KDRIVE_USER", ""),
             os.environ.get("KDRIVE_PASSWORD", ""),
+            os.environ.get("RCLONE_REMOTE", ""),
         )
     except ValueError as exc:
         env_warning = str(exc)
@@ -159,9 +161,12 @@ def create_app() -> Flask:
     def state() -> dict:
         jobs = [engine.public_job(job) for job in store.list_jobs()]
         connection = store.connection_public()
-        env_ready = all(
+        env_remote = os.environ.get("RCLONE_REMOTE", "").strip() or engine.RCLONE_EXAMPLE_REMOTE
+        rclone_env_ready = any(item["name"] == env_remote for item in connection["remotes"])
+        manual_env_ready = all(
             os.environ.get(key, "").strip() for key in ("KDRIVE_ID", "KDRIVE_USER", "KDRIVE_PASSWORD")
         )
+        env_ready = rclone_env_ready or (manual_env_ready and not connection["rclone_present"])
         return {
             "ok": True,
             "now": now().isoformat(),
@@ -254,13 +259,17 @@ def create_app() -> Flask:
             dirs.append({"name": entry.name, "path": child})
         return jsonify({"ok": True, "path": rel, "dirs": dirs})
 
+    def active_target(rel: str = "") -> tuple[dict, str]:
+        backend = store.require_backend()
+        return backend, engine.remote_spec(backend["remote"], rel)
+
     @app.get("/api/remote")
     def api_remote():
         rel = engine.clean_rel(request.args.get("path", ""), label="kDrive-Ordner")
-        target = f"kdrive:{rel}" if rel else "kdrive:"
+        backend, target = active_target(rel)
         code, text = probe(
             store,
-            ["rclone", "lsf", target, "--dirs-only", "--max-depth", "1", "--config", str(store.conf_path), "--contimeout", "20s", "--timeout", "30s"],
+            ["rclone", "lsf", target, "--dirs-only", "--max-depth", "1", "--config", str(backend["config_path"]), "--contimeout", "20s", "--timeout", "30s"],
         )
         if code != 0:
             raise ValueError(text or "kDrive-Ordner nicht lesbar")
@@ -271,9 +280,10 @@ def create_app() -> Flask:
         rel = engine.clean_rel(payload().get("path"), label="kDrive-Ordner")
         if not rel:
             raise ValueError("Ordnername fehlt")
+        backend, target = active_target(rel)
         code, text = probe(
             store,
-            ["rclone", "mkdir", f"kdrive:{rel}", "--config", str(store.conf_path)],
+            ["rclone", "mkdir", target, "--config", str(backend["config_path"])],
             timeout=40,
         )
         if code != 0:
@@ -283,18 +293,32 @@ def create_app() -> Flask:
     @app.post("/api/connection")
     def api_connection():
         data = payload()
-        password = data.get("password")
-        if password is not None and str(password) == "":
-            password = None
-        store.write_webdav(str(data.get("kdrive_id") or ""), str(data.get("kdrive_user") or ""), password)
+        mode = str(data.get("mode") or "manual")
+        if mode == "rclone":
+            store.use_rclone_remote(str(data.get("rclone_remote") or ""))
+        elif mode == "manual":
+            password = data.get("password")
+            if password is not None and str(password) == "":
+                password = None
+            target = str(data.get("webdav_url") or data.get("kdrive_id") or "")
+            store.write_webdav(
+                target,
+                str(data.get("kdrive_user") or ""),
+                password,
+                obscured=engine.as_bool(data.get("password_obscured")),
+            )
+            store.set("connection_mode", "manual")
+        else:
+            raise ValueError("Unbekannte Verbindungsart")
         store.set("connection_source", "ui")
         return jsonify({"ok": True, "connection": store.connection_public()})
 
     @app.post("/api/connection/test")
     def api_connection_test():
+        backend = store.require_backend()
         code, text = probe(
             store,
-            ["rclone", "lsf", "kdrive:", "--dirs-only", "--max-depth", "1", "--config", str(store.conf_path), "--contimeout", "20s", "--timeout", "35s"],
+            ["rclone", "lsf", engine.remote_spec(backend["remote"]), "--dirs-only", "--max-depth", "1", "--config", str(backend["config_path"]), "--contimeout", "20s", "--timeout", "35s"],
             timeout=40,
         )
         if code != 0:
@@ -303,13 +327,20 @@ def create_app() -> Flask:
 
     @app.post("/api/connection/reset-env")
     def api_reset_env():
-        drive_id = os.environ.get("KDRIVE_ID", "")
-        user = os.environ.get("KDRIVE_USER", "")
-        password = os.environ.get("KDRIVE_PASSWORD", "")
-        if not (drive_id.strip() and user.strip() and password):
+        store.apply_env(
+            os.environ.get("KDRIVE_ID", ""),
+            os.environ.get("KDRIVE_USER", ""),
+            os.environ.get("KDRIVE_PASSWORD", ""),
+            os.environ.get("RCLONE_REMOTE", ""),
+            force=True,
+        )
+        if not store.backend()["ready"]:
+            if store.external_config.is_file():
+                raise ValueError(
+                    "Der rclone-Eintrag aus den Container-Parametern steht nicht in der Datei. "
+                    "Beispiel: [Infomaniak] in /boot/config/plugins/rclone/.rclone.conf"
+                )
             raise ValueError("KDRIVE_ID, KDRIVE_USER und KDRIVE_PASSWORD sind im Container nicht gesetzt")
-        store.write_webdav(drive_id, user, password)
-        store.set("connection_source", "env")
         return jsonify({"ok": True, "connection": store.connection_public()})
 
     @app.post("/api/settings")
@@ -335,16 +366,24 @@ def create_app() -> Flask:
             old = store.get_job(str(raw.get("id")))
             if old:
                 job = engine.prepare_job(raw, old=old, shares_root=shares_root, now=now(), tz=tz, relax_confirm=True)
+        backend = store.backend()
+        if backend["mode"] == "rclone" and backend["remote"]:
+            remote_name = backend["remote"]
+            config_path = backend["config_path"]
+        else:
+            remote_name = "kdrive"
+            config_path = store.conf_path
         commands = engine.build_commands(
             job,
             shares_root=shares_root,
-            config_path=store.conf_path,
+            config_path=config_path,
             filter_path=store.config_dir / "filters" / f"{job['id']}.txt",
             workdir_base=store.config_dir / "bisync",
             version_root=store.config_dir / "versions",
             dry_run=False,
             resync=engine.needs_resync(job),
             stamp="ZEITSTEMPEL",
+            remote_name=remote_name,
         )
         return jsonify(
             {

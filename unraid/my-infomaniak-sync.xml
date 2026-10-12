@@ -18,7 +18,7 @@ SETUP / Vorlage installieren (Unraid-Terminal):&#13;
 bash &lt;(curl -fsSL https://raw.githubusercontent.com/PaulG67/infomaniak-sync/main/unraid/install-template.sh)&#13;
 Danach: Docker - Container hinzufuegen - Template infomaniak-sync - Shares pruefen - Apply.&#13;
 WebUI: http://UNRAID-IP:8794&#13;
-Verbindung in der WebUI oder ueber kDrive-ID, Benutzer und Passwort.&#13;
+Verbindung: vorhandene rclone-Datei, Beispiel /boot/config/plugins/rclone/.rclone.conf mit Eintrag [Infomaniak], oder eigene kDrive-Zugangsdaten.&#13;
 Updates: Docker - infomaniak-sync - Force Update. Neue Felder nur mit Edit - Apply.
   </Overview>
   <Category>Backup: Tools:</Category>
@@ -36,9 +36,11 @@ Updates: Docker - infomaniak-sync - Force Update. Neue Felder nur mit Edit - App
   <Config Name="WebUI Port" Target="8794" Default="8794" Mode="tcp" Description="Web-Oberflaeche Infomaniak Sync" Type="Port" Display="always" Required="true" Mask="false">8794</Config>
   <Config Name="Config" Target="/config" Default="/mnt/user/appdata/infomaniak-sync" Mode="rw" Description="Einstellungen, Protokolle und lokale Versionskopien" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/infomaniak-sync</Config>
   <Config Name="Shares" Target="/shares" Default="/mnt/user" Mode="rw" Description="Unraid-Shares. Standard /mnt/user zeigt alle Shares. Schreibzugriff, damit auch Herunterladen und lokales Angleichen moeglich sind." Type="Path" Display="always" Required="true" Mask="false">/mnt/user</Config>
-  <Config Name="kDrive-ID" Target="KDRIVE_ID" Default="" Mode="" Description="Zahl nach /drive/ in der kDrive-Adresse. Kann leer bleiben und in der WebUI gesetzt werden." Type="Variable" Display="always" Required="false" Mask="false"></Config>
-  <Config Name="kDrive-Benutzer" Target="KDRIVE_USER" Default="" Mode="" Description="E-Mail des Infomaniak-Kontos" Type="Variable" Display="always" Required="false" Mask="false"></Config>
-  <Config Name="kDrive-Passwort" Target="KDRIVE_PASSWORD" Default="" Mode="" Description="Anwendungspasswort. Leer lassen und stattdessen in der WebUI speichern, wenn das Passwort nicht in der Container-Konfiguration stehen soll." Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="rclone-Konfiguration" Target="/rclone/rclone.conf" Default="/boot/config/plugins/rclone/.rclone.conf" Mode="ro" Description="Vorhandene rclone-Datei, nur lesend. Beispiel: /boot/config/plugins/rclone/.rclone.conf mit dem Eintrag [Infomaniak]. Leer lassen, wenn stattdessen kDrive-ID, Benutzer und Passwort verwendet werden. In der WebUI laesst sich ein anderer WebDAV-Eintrag derselben Datei waehlen." Type="Path" Display="always" Required="false" Mask="false">/boot/config/plugins/rclone/.rclone.conf</Config>
+  <Config Name="rclone-Remote" Target="RCLONE_REMOTE" Default="Infomaniak" Mode="" Description="Name des WebDAV-Eintrags in der rclone-Datei, ohne eckige Klammern. Beispiel: Infomaniak, passend zu [Infomaniak]. Die WebUI zeigt alle WebDAV-Eintraege dieser Datei zur Auswahl." Type="Variable" Display="always" Required="false" Mask="false">Infomaniak</Config>
+  <Config Name="kDrive-ID" Target="KDRIVE_ID" Default="" Mode="" Description="Nur fuer eigene Zugangsdaten. Zahl nach /drive/ in der kDrive-Adresse. Leer lassen, wenn die rclone-Datei verwendet wird." Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <Config Name="kDrive-Benutzer" Target="KDRIVE_USER" Default="" Mode="" Description="Nur fuer eigene Zugangsdaten. E-Mail des Infomaniak-Kontos. Leer lassen, wenn die rclone-Datei verwendet wird." Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <Config Name="kDrive-Passwort" Target="KDRIVE_PASSWORD" Default="" Mode="" Description="Nur fuer eigene Zugangsdaten. Anwendungspasswort. Leer lassen, wenn der Eintrag [Infomaniak] aus der rclone-Datei verwendet wird." Type="Variable" Display="always" Required="false" Mask="true"></Config>
   <Config Name="WebUI-Benutzer" Target="WEB_USER" Default="admin" Mode="" Description="Benutzer, falls ein WebUI-Passwort gesetzt ist" Type="Variable" Display="advanced" Required="false" Mask="false">admin</Config>
   <Config Name="WebUI-Passwort" Target="WEB_PASSWORD" Default="" Mode="" Description="Wenn gesetzt, verlangt die Oberflaeche eine Anmeldung" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
   <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User-ID (Unraid nobody = 99)" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>

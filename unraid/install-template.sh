@@ -32,6 +32,14 @@ if ! grep -q 'Name="kDrive-ID"' "${USER_XML}"; then
   echo "FEHLER: Vorlage enthaelt keine kDrive-ID — Abbruch."
   exit 1
 fi
+if ! grep -q 'Name="rclone-Konfiguration"' "${USER_XML}"; then
+  echo "FEHLER: Vorlage enthaelt keine rclone-Konfiguration — Abbruch."
+  exit 1
+fi
+if ! grep -q '/boot/config/plugins/rclone/.rclone.conf' "${USER_XML}"; then
+  echo "FEHLER: Vorlage enthaelt den rclone-Beispielpfad nicht — Abbruch."
+  exit 1
+fi
 
 echo "  ${USER_XML}"
 wc -c "${USER_XML}" | awk '{print "  Groesse:" $1 " Bytes"}'
@@ -62,7 +70,8 @@ echo
 echo "Seite neu laden (F5), dann:"
 echo "  Docker -> Container hinzufuegen -> Template infomaniak-sync"
 echo "  Shares bleibt auf /mnt/user, Config auf /mnt/user/appdata/infomaniak-sync"
-echo "  kDrive-ID, E-Mail und Anwendungspasswort optional hier oder spaeter in der WebUI"
+echo "  rclone-Konfiguration: /boot/config/plugins/rclone/.rclone.conf, Remote Infomaniak"
+echo "  Oder eigene kDrive-ID, E-Mail und Anwendungspasswort. In der WebUI umschaltbar."
 echo "  WebUI: http://UNRAID-IP:8794"
 echo
 echo "Update: dieses Script erneut, danach Docker -> Force Update."

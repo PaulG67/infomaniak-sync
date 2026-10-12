@@ -13,6 +13,7 @@ import shlex
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from croniter import croniter
@@ -23,6 +24,11 @@ CONFLICTS = ("newer", "larger", "local", "remote", "both")
 COMPARES = ("modtime", "checksum", "size")
 DELETE_MODES = ("after", "during", "before")
 SCHEDULE_TYPES = ("manual", "interval", "daily", "weekly", "cron")
+RCLONE_EXAMPLE_PATH = "/boot/config/plugins/rclone/.rclone.conf"
+RCLONE_EXAMPLE_REMOTE = "Infomaniak"
+RCLONE_REMOTE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@-]{0,80}$")
+_RCLONE_PUBLIC_KEYS = frozenset({"type", "url", "vendor", "user"})
+_RCLONE_SECRET_KEYS = frozenset({"pass", "password", "token", "bearer_token", "client_secret", "auth_token"})
 WEEKDAYS = ("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag")
 
 MODE_TEXT = {
@@ -154,30 +160,136 @@ def webdav_url(drive_id: str) -> str:
     return f"https://{drive_id}.connect.kdrive.infomaniak.com"
 
 
+def kdrive_target(value: str) -> tuple[str, str]:
+    """kDrive-ID oder die url aus der rclone-Datei, zum Beispiel https://260259.connect.kdrive.infomaniak.com."""
+    raw = str(value or "").strip().rstrip("/")
+    if DRIVE_ID.fullmatch(raw):
+        return raw, webdav_url(raw)
+    parts = urlsplit(raw)
+    host = (parts.hostname or "").lower()
+    match = re.fullmatch(r"(\d{1,15})\.connect\.kdrive\.infomaniak\.com", host)
+    if parts.scheme == "https" and match and parts.path in ("", "/"):
+        drive_id = match.group(1)
+        return drive_id, webdav_url(drive_id)
+    raise ValueError(
+        "WebDAV-Adresse muss wie der url-Eintrag aussehen, "
+        "zum Beispiel https://260259.connect.kdrive.infomaniak.com"
+    )
+
+
 def validate_identity(drive_id: str, user: str, password: str | None) -> tuple[str, str]:
-    drive_id = str(drive_id or "").strip()
+    drive_id, _url = kdrive_target(drive_id)
     user = str(user or "").strip()
-    if not DRIVE_ID.fullmatch(drive_id):
-        raise ValueError("kDrive-ID muss die Zahl nach /drive/ in der kDrive-Adresse sein")
     if not EMAIL.fullmatch(user) or len(user) > 200:
-        raise ValueError("Benutzer muss die E-Mail des Infomaniak-Kontos sein")
+        raise ValueError("Benutzer muss die E-Mail des Infomaniak-Kontos sein, wie user in der rclone-Datei")
     if password is not None:
         if any(ch in password for ch in "\r\n\x00"):
             raise ValueError("Passwort enthält ungültige Zeichen")
-        if len(password) > 500:
+        if len(password) > 2000:
             raise ValueError("Passwort ist zu lang")
     return drive_id, user
 
 
-def render_rclone_conf(drive_id: str, user: str) -> str:
-    drive_id, user = validate_identity(drive_id, user, None)
+def render_rclone_conf(drive_id: str, user: str, obscured_pass: str | None = None) -> str:
+    drive_id, user = validate_identity(drive_id, user, obscured_pass)
+    lines = [
+        "[kdrive]",
+        "type = webdav",
+        f"url = {webdav_url(drive_id)}",
+        "vendor = other",
+        f"user = {user}",
+    ]
+    if obscured_pass:
+        lines.append(f"pass = {obscured_pass}")
+    return "\n".join(lines) + "\n"
+
+
+def render_remote_conf(name: str, url: str, user: str, obscured_pass: str, vendor: str = "other") -> str:
+    if not RCLONE_REMOTE_NAME.fullmatch(name or ""):
+        raise ValueError("rclone-Remote ist ungültig")
+    _drive_id, url = kdrive_target(url)
+    _drive_id, user = validate_identity(_drive_id, user, obscured_pass)
+    if not obscured_pass:
+        raise ValueError("pass fehlt im WebDAV-Eintrag")
+    vendor = (vendor or "other").strip() or "other"
+    if any(ch in vendor for ch in "\r\n") or len(vendor) > 40:
+        vendor = "other"
     return (
-        "[kdrive]\n"
+        f"[{name}]\n"
         "type = webdav\n"
-        f"url = {webdav_url(drive_id)}\n"
-        "vendor = other\n"
+        f"url = {url}\n"
+        f"vendor = {vendor}\n"
         f"user = {user}\n"
+        f"pass = {obscured_pass}\n"
     )
+
+
+def _public_url(url: str) -> str:
+    if not url or "://" not in url:
+        return url
+    parts = urlsplit(url)
+    if not parts.hostname:
+        return ""
+    host = parts.hostname
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return urlunsplit((parts.scheme, host, parts.path, parts.query, ""))
+
+
+def read_rclone_section(text: str, name: str) -> dict[str, str] | None:
+    """Ein rclone-Abschnitt inklusive pass. Nur serverseitig verwenden."""
+    current = ""
+    data: dict[str, str] | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith(";"):
+            continue
+        if line.startswith("[") and line.endswith("]") and len(line) > 2:
+            if data is not None:
+                break
+            current = line[1:-1].strip()
+            data = {} if current == name else None
+            continue
+        if data is None or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        data[key.strip().lower()] = value.strip().strip('"').strip("'")
+    return data
+
+
+def parse_rclone_remotes(text: str) -> list[dict]:
+    """WebDAV- und andere Remotes ohne Passwörter oder Tokens."""
+    current: dict | None = None
+    found: list[dict] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith(";"):
+            continue
+        if line.startswith("[") and line.endswith("]") and len(line) > 2:
+            name = line[1:-1].strip()
+            if RCLONE_REMOTE_NAME.fullmatch(name):
+                current = {"name": name, "type": "", "url": "", "vendor": "", "user": ""}
+                found.append(current)
+            else:
+                current = None
+            continue
+        if current is None or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip().lower()
+        if key in _RCLONE_SECRET_KEYS or key not in _RCLONE_PUBLIC_KEYS:
+            continue
+        current[key] = value.strip().strip('"').strip("'")
+    for item in found:
+        item["url"] = _public_url(item["url"])
+    return found
+
+
+def remote_spec(remote_name: str, path: str = "") -> str:
+    if not RCLONE_REMOTE_NAME.fullmatch(remote_name or ""):
+        raise ValueError("rclone-Remote ist ungültig")
+    path = (path or "").strip("/")
+    return f"{remote_name}:{path}" if path else f"{remote_name}:"
 
 
 def render_filters(job: dict, extra_excludes: list[str] | None = None) -> str:
@@ -545,11 +657,6 @@ def config_exclude(config_dir: Path, shares_root: Path) -> str | None:
     return rel
 
 
-def _dest(remote: str) -> str:
-    remote = remote.strip("/")
-    return f"kdrive:{remote}" if remote else "kdrive:"
-
-
 def build_commands(
     job: dict,
     *,
@@ -561,6 +668,7 @@ def build_commands(
     dry_run: bool = False,
     resync: bool = False,
     stamp: str,
+    remote_name: str = "kdrive",
 ) -> list[list[str]]:
     commands = []
     slug = slugify(job["name"], job["id"])
@@ -569,7 +677,7 @@ def build_commands(
         remote = mapping["remote"]
         src_is_local = job["mode"] in {"upload", "mirror_up", "bisync"}
         local_s = str(local)
-        remote_s = _dest(remote)
+        remote_s = remote_spec(remote_name, remote)
         if job["mode"] == "bisync":
             argv = ["rclone", "bisync", local_s, remote_s]
         elif src_is_local:
@@ -679,7 +787,7 @@ def build_commands(
                         "--backup-dir1",
                         str(local_backup),
                         "--backup-dir2",
-                        f"kdrive:{remote_backup}",
+                        remote_spec(remote_name, remote_backup),
                         "--suffix",
                         leaf,
                         "--suffix-keep-extension",
@@ -687,7 +795,7 @@ def build_commands(
                 )
             elif job["mode"] in {"upload", "mirror_up"}:
                 argv.extend(
-                    ["--backup-dir", f"kdrive:{remote_backup}", "--suffix", leaf, "--suffix-keep-extension"]
+                    ["--backup-dir", remote_spec(remote_name, remote_backup), "--suffix", leaf, "--suffix-keep-extension"]
                 )
             else:
                 argv.extend(["--backup-dir", str(local_backup), "--suffix", leaf, "--suffix-keep-extension"])
