@@ -848,8 +848,37 @@ def _dry_paths(kind: str, direction: str, local_root: str, remote_root: str, obj
     return _join_root(local_root, obj), _join_root(remote_root, obj)
 
 
+def _plain(text: str) -> str:
+    return re.sub(r"\s+", " ", _ANSI.sub("", text or "")).strip()
+
+
+def _side_states(kind: str, way: str) -> tuple[str, str]:
+    """Zustand der Datei auf Unraid und auf kDrive: vorhanden, erstellt, überschrieben, gelöscht."""
+    if kind == "copy" and way == "down":
+        return "create", "exists"
+    if kind == "copy" and way == "up":
+        return "exists", "create"
+    if kind in {"overwrite", "time"} and way == "down":
+        return "overwrite" if kind == "overwrite" else "time", "exists"
+    if kind in {"overwrite", "time"} and way == "up":
+        return "exists", "overwrite" if kind == "overwrite" else "time"
+    if kind == "delete" and way == "local":
+        return "delete", "absent"
+    if kind == "delete" and way == "remote":
+        return "absent", "delete"
+    if kind == "keep" and way == "local":
+        return "exists", "absent"
+    if kind == "keep" and way == "remote":
+        return "absent", "exists"
+    if kind == "move" and way == "down":
+        return "create", "exists"
+    if kind == "move" and way == "up":
+        return "exists", "create"
+    return "absent", "absent"
+
+
 def _note_phase(msg: str, phase: str | None, delete_side: str | None) -> tuple[str | None, str | None]:
-    low = re.sub(r"\s+", " ", msg.lower()).replace(" - ", " ")
+    low = _plain(msg).lower().replace(" - ", " ")
     # Path1 ist Unraid, Path2 ist kDrive. "copy to Path1" schreibt nach Unraid.
     if "copy to path1" in low or "copies to path1" in low:
         phase = "down"
@@ -916,10 +945,13 @@ def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
         if key in seen:
             return
         seen.add(key)
+        local_state, remote_state = _side_states(kind, way)
         rows.append(
             {
                 "local": local,
                 "remote": remote,
+                "local_state": local_state,
+                "remote_state": remote_state,
                 "kind": kind,
                 "direction": way,
                 "label": label or _dry_label(kind, way, version),
@@ -943,7 +975,7 @@ def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
             add("delete", path, "remote", "Auf Unraid gelöscht · löschen auf kDrive")
 
     def take_bisync(text: str) -> bool:
-        matched_change = _BISYNC_CHANGE.search(text)
+        matched_change = _BISYNC_CHANGE.search(_plain(text))
         if not matched_change:
             return False
         what = matched_change.group("what").lower()
@@ -958,6 +990,8 @@ def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
 
     def consider(level: str, msg: str, obj: str) -> None:
         nonlocal phase, delete_side
+        msg = _plain(msg)
+        obj = _plain(obj)
         low = msg.lower()
         if "directory modification time" in low or "directory modtime" in low:
             return

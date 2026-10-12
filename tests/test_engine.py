@@ -343,6 +343,8 @@ INFO  : - Path2    Queue copy to Path1                 - /shares/Daten/users/361
     assert rows[0]["kind"] == "copy"
     assert rows[0]["direction"] == "down"
     assert rows[0]["label"] == "Neu auf kDrive · kopieren nach Unraid"
+    assert rows[0]["local_state"] == "create"
+    assert rows[0]["remote_state"] == "exists"
     assert rows[0]["remote"] == "OpenCloud_Daten/361eed1e-a730-4693-8e98-a243a1a21399/Paul.docx"
     assert rows[0]["local"] == "Daten/users/361eed1e-a730-4693-8e98-a243a1a21399/Paul.docx"
     assert "Überschreiben" not in rows[0]["label"]
@@ -360,7 +362,32 @@ INFO : - Path2    Do queued copies to                 - Path1
     assert total == 1
     assert rows[0]["direction"] == "down"
     assert rows[0]["label"] == "Neu auf kDrive · kopieren nach Unraid"
+    assert rows[0]["local_state"] == "create"
+    assert rows[0]["remote_state"] == "exists"
     assert "Unraid →" not in rows[0]["label"]
+
+
+def test_colored_bisync_line_is_new_on_kdrive_not_unraid():
+    import json
+
+    path = "361eed1e-a730-4693-8e98-a243a1a21399/Paul.docx"
+    notice = "- \x1b[34mPath2\x1b[0m \x1b[32mFile is new\x1b[0m - \x1b[36m" + path + "\x1b[0m"
+    phase = "- \x1b[34mPath1\x1b[0m \x1b[32mDo queued copies to\x1b[0m - \x1b[36mPath2\x1b[0m"
+    text = "\n".join(
+        [
+            '# PLAN {"local":"Daten/users","remote":"OpenCloud_Daten","dir":"both","version":false}',
+            json.dumps({"level": "info", "msg": notice}),
+            json.dumps({"level": "info", "msg": phase}),
+            json.dumps({"level": "debug", "msg": "Need to transfer - File not found at Destination", "object": path}),
+            json.dumps({"level": "notice", "msg": "Skipped copy as --dry-run is set (size 20)", "object": path}),
+        ]
+    )
+    rows, total = parse_dry_run(text)
+    assert total == 1
+    assert rows[0]["label"] == "Neu auf kDrive · kopieren nach Unraid"
+    assert rows[0]["local_state"] == "create"
+    assert rows[0]["remote_state"] == "exists"
+    assert "kopieren nach kDrive" not in rows[0]["label"]
 
 
 def test_dry_run_upload_leaves_kdrive_only_files():

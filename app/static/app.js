@@ -503,13 +503,19 @@ function renderPlan(actions, total, status) {
   const host = document.getElementById("plan");
   if (!host) return;
   const empty = status === "running" ? "Probelauf läuft …" : "Keine Dateien würden sich ändern.";
+  const place = { exists: "vorhanden", create: "wird erstellt", overwrite: "wird überschrieben", delete: "wird gelöscht", time: "Zeitstempel" };
+  const cell = (path, state) => {
+    const tag = place[state] ? `<span class="st-tag">${esc(place[state])}</span>` : "";
+    return `<td class="path st-${esc(state || "absent")} ${path ? "" : "empty"}">${tag}${esc(path || "—")}</td>`;
+  };
   const body = actions.length ? actions.map((row) => `<tr>
-    <td class="path ${row.local ? "" : "empty"}">${esc(row.local || "—")}</td>
+    ${cell(row.local, row.local_state)}
     <td class="act ${esc(row.kind)}">${esc(row.label)}</td>
-    <td class="path ${row.remote ? "" : "empty"}">${esc(row.remote || "—")}</td>
+    ${cell(row.remote, row.remote_state)}
   </tr>`).join("") : `<tr><td colspan="3" class="empty">${esc(empty)}</td></tr>`;
+  const legend = `<p class="plan-legend"><span class="st-exists">vorhanden</span><span class="st-create">wird erstellt</span><span class="st-overwrite">wird überschrieben</span><span class="st-delete">wird gelöscht</span></p>`;
   const more = total > actions.length ? `<p class="meta">Die ersten ${actions.length} von ${total} Dateien.</p>` : "";
-  host.innerHTML = `<div class="plan-wrap"><table class="plan">
+  host.innerHTML = `${actions.length ? legend : ""}<div class="plan-wrap"><table class="plan">
     <thead><tr><th>Unraid</th><th>Vorgang</th><th>Infomaniak</th></tr></thead>
     <tbody>${body}</tbody>
   </table></div>${more}`;

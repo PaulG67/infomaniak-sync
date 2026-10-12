@@ -151,6 +151,23 @@ table.plan td.act.copy { color: var(--accent); }
 table.plan td.act.overwrite { color: var(--warn); }
 table.plan td.act.delete { color: var(--danger); }
 table.plan td.empty { color: var(--muted); }
+table.plan td.st-exists { background: #e7f6ee; }
+table.plan td.st-create { background: #e5f3f8; }
+table.plan td.st-overwrite { background: var(--warn-bg); }
+table.plan td.st-delete { background: #fdecec; }
+table.plan td.st-time { background: #f4f0fa; }
+table.plan .st-tag { display: block; font-family: "Segoe UI", sans-serif; font-size: .68rem; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; margin-bottom: .2rem; }
+table.plan td.st-exists .st-tag { color: #0d6b45; }
+table.plan td.st-create .st-tag { color: var(--accent); }
+table.plan td.st-overwrite .st-tag { color: var(--warn); }
+table.plan td.st-delete .st-tag { color: var(--danger); }
+table.plan td.st-time .st-tag { color: #5b3f86; }
+.plan-legend { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0 0 .7rem; }
+.plan-legend span { border-radius: 999px; padding: .15rem .55rem; font-size: .75rem; font-weight: 650; }
+.plan-legend .st-exists { background: #e7f6ee; color: #0d6b45; }
+.plan-legend .st-create { background: #e5f3f8; color: var(--accent); }
+.plan-legend .st-overwrite { background: var(--warn-bg); color: var(--warn); }
+.plan-legend .st-delete { background: #fdecec; color: var(--danger); }
 table { width: 100%; border-collapse: collapse; font-size: .92rem; }
 th, td { text-align: left; padding: .55rem .35rem; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { color: var(--muted); font-size: .75rem; letter-spacing: .04em; text-transform: uppercase; }
