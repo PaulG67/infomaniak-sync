@@ -1,0 +1,13 @@
+---
+description: Commit finished changes and push them to GitHub
+alwaysApply: true
+---
+
+# Push finished work to GitHub
+
+When a change in this repository is finished, commit it and push it to `origin` on `main` without waiting for another request.
+
+- Use the repository commit style: one or two sentences on why.
+- Do not commit secrets, local preview data, or `.local/`.
+- Do not force-push, skip hooks, or change git config.
+- After the image build finishes, say that Unraid can Force Update.

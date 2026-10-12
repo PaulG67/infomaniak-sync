@@ -6,7 +6,7 @@
   <meta name="robots" content="noindex" />
   <title>Infomaniak Sync</title>
   <link rel="icon" href="/static/icon.svg" />
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v={{ version }}" />
 </head>
 <body>
   <div class="wrap">
@@ -14,7 +14,7 @@
       <img src="/static/icon.svg" alt="" width="48" height="48" />
       <div>
         <h1>Infomaniak Sync</h1>
-        <p>Unraid-Shares mit kDrive abgleichen</p>
+        <p>Unraid-Shares mit kDrive abgleichen · Version {{ version }}</p>
       </div>
       <div class="header-meta" id="header-meta"></div>
     </header>
@@ -27,6 +27,6 @@
     <div id="app"></div>
   </div>
   <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title"></div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v={{ version }}"></script>
 </body>
 </html>

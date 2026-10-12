@@ -308,3 +308,56 @@ def test_dry_run_download_and_bisync_direction():
     assert rows[3]["local"] == "photos/weg.txt"
     assert rows[3]["remote"] == ""
     assert "Löschen auf Unraid" in rows[3]["label"]
+
+
+def test_dry_run_combined_report_replaces_log_noise():
+    text = """
+# PLAN {"local":"photos","remote":"Medien/Fotos","dir":"up","version":false}
+{"level":"notice","msg":"Skipped copy as --dry-run is set (size 1)","object":"falsch.jpg"}
+# COMBINED
++ 2024/neu.jpg
+* alt.jpg
+- weg.jpg
+= gleich.jpg
+! kaputt.jpg
+"""
+    rows, total = parse_dry_run(text)
+    assert total == 4
+    assert [row["kind"] for row in rows] == ["copy", "overwrite", "delete", "error"]
+    assert rows[0]["local"] == "photos/2024/neu.jpg"
+    assert rows[0]["remote"] == "Medien/Fotos/2024/neu.jpg"
+    assert rows[2]["remote"] == "Medien/Fotos/weg.jpg"
+    assert rows[2]["local"] == ""
+    assert "Fehler" in rows[3]["label"]
+
+
+def test_dry_run_new_kdrive_file_is_not_an_unraid_overwrite():
+    text = """
+# PLAN {"local":"Daten/users","remote":"OpenCloud_Daten","dir":"both","version":false}
+INFO  : - Path2    File is new                         - 361eed1e-a730-4693-8e98-a243a1a21399/Paul.docx
+INFO  : - Path2    Queue copy to Path1                 - /shares/Daten/users/361eed1e-a730-4693-8e98-a243a1a21399/Paul.docx
+{"level":"notice","msg":"Skipped copy as --dry-run is set (size 12)","object":"361eed1e-a730-4693-8e98-a243a1a21399/Paul.docx"}
+"""
+    rows, total = parse_dry_run(text)
+    assert total == 1
+    assert rows[0]["kind"] == "copy"
+    assert rows[0]["direction"] == "down"
+    assert rows[0]["label"] == "Neu auf kDrive · kopieren nach Unraid"
+    assert rows[0]["remote"] == "OpenCloud_Daten/361eed1e-a730-4693-8e98-a243a1a21399/Paul.docx"
+    assert rows[0]["local"] == "Daten/users/361eed1e-a730-4693-8e98-a243a1a21399/Paul.docx"
+    assert "Überschreiben" not in rows[0]["label"]
+    assert "Unraid →" not in rows[0]["label"]
+
+
+def test_dry_run_upload_leaves_kdrive_only_files():
+    text = """
+# PLAN {"local":"Daten/users","remote":"OpenCloud_Daten","dir":"up","version":false,"deletes":false}
+# COMBINED
+- 361eed1e-a730-4693-8e98-a243a1a21399/Paul.docx
+"""
+    rows, total = parse_dry_run(text)
+    assert total == 1
+    assert rows[0]["kind"] == "keep"
+    assert rows[0]["local"] == ""
+    assert rows[0]["remote"].endswith("Paul.docx")
+    assert "nicht verändert" in rows[0]["label"]

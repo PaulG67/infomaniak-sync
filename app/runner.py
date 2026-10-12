@@ -204,13 +204,20 @@ class Runner:
                         "remote": mapping.get("remote") or "",
                         "dir": way,
                         "version": job.get("existing") == "version" or (job["mode"] == "bisync" and resync),
+                        "deletes": job["mode"] in {"mirror_up", "mirror_down"},
                     }
                     with log_path.open("a", encoding="utf-8") as handle:
                         handle.write("# PLAN " + json.dumps(marker, ensure_ascii=False) + "\n")
+                combined_path = None
+                if dry_run and job["mode"] != "bisync":
+                    combined_path = log_path.with_name(f"{log_path.stem}-{index}.combined")
+                    combined_path.unlink(missing_ok=True)
+                    argv = [*argv, "--combined", str(combined_path)]
                 if job["id"] in self._cancel:
                     status = "cancelled"
                     break
                 code = self._run_process(job["id"], argv, log_path, env)
+                self._append_combined(log_path, combined_path)
                 if job["id"] in self._cancel or code < 0:
                     status = "cancelled"
                     break
@@ -261,6 +268,18 @@ class Runner:
                     last_run_at=datetime.now(self.tz).isoformat(),
                 ),
             )
+
+    def _append_combined(self, log_path: Path, combined_path: Path | None) -> None:
+        if combined_path is None or not combined_path.is_file():
+            return
+        report = combined_path.read_text(encoding="utf-8", errors="replace").strip()
+        combined_path.unlink(missing_ok=True)
+        if not report:
+            return
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write("# COMBINED\n")
+            handle.write(report)
+            handle.write("\n")
 
     def _run_process(self, job_id: str, argv: list[str], log_path: Path, env: dict) -> int:
         kwargs = {}

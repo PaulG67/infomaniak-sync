@@ -835,13 +835,15 @@ def _dry_label(kind: str, direction: str, version: bool) -> str:
         return "Löschen auf Unraid"
     if kind == "delete":
         return "Löschen"
+    if kind == "error":
+        return f"Fehler · {arrow}"
     return arrow
 
 
 def _dry_paths(kind: str, direction: str, local_root: str, remote_root: str, obj: str) -> tuple[str, str]:
-    if kind == "delete" and direction == "remote":
+    if kind in {"delete", "keep"} and direction == "remote":
         return "", _join_root(remote_root, obj)
-    if kind == "delete" and direction == "local":
+    if kind in {"delete", "keep"} and direction == "local":
         return _join_root(local_root, obj), ""
     return _join_root(local_root, obj), _join_root(remote_root, obj)
 
@@ -860,6 +862,24 @@ def _note_phase(msg: str, phase: str | None, delete_side: str | None) -> tuple[s
     return phase, delete_side
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+_BISYNC_CHANGE = re.compile(
+    r"Path(?P<side>[12])\s+(?P<what>File is new|File is newer|File was deleted)\s+-\s+(?P<path>.+?)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _object_name(value) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("remote", "path", "name"):
+            found = value.get(key)
+            if isinstance(found, str) and found:
+                return found
+    return ""
+
+
 def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
     """Dateiaktionen eines rclone-Probelaufs: Unraid, Vorgang, kDrive."""
     local_root = ""
@@ -871,13 +891,20 @@ def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
     missing: set[str] = set()
     rows: list[dict] = []
     seen: set[tuple] = set()
+    section_start = 0
+    in_combined = False
+    deletes = True
+    bisync_seen = False
     plain = re.compile(
         r"^(?:\d{4}/\d{2}/\d{2}[ T]\d{2}:\d{2}:\d{2}\s+)?(?:NOTICE|INFO|DEBUG)\s*:?\s*(?P<body>.*)$",
         re.IGNORECASE,
     )
 
-    def add(kind: str, obj: str, way: str) -> None:
+    def add(kind: str, obj: str, way: str, label: str | None = None) -> None:
         if not obj or obj in {".", "/"}:
+            return
+        obj = obj.replace("\\", "/").strip().strip("/")
+        if not obj:
             return
         local, remote = _dry_paths(kind, way, local_root, remote_root, obj)
         key = (local, remote, kind, way)
@@ -890,20 +917,57 @@ def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
                 "remote": remote,
                 "kind": kind,
                 "direction": way,
-                "label": _dry_label(kind, way, version),
+                "label": label or _dry_label(kind, way, version),
             }
         )
+
+    def add_bisync(side: str, what: str, path: str) -> None:
+        nonlocal bisync_seen
+        bisync_seen = True
+        if what == "new" and side == "2":
+            add("copy", path, "down", "Neu auf kDrive · kopieren nach Unraid")
+        elif what == "new" and side == "1":
+            add("copy", path, "up", "Neu auf Unraid · kopieren nach kDrive")
+        elif what == "newer" and side == "2":
+            add("overwrite", path, "down", "kDrive ist neuer · kDrive → Unraid")
+        elif what == "newer" and side == "1":
+            add("overwrite", path, "up", "Unraid ist neuer · Unraid → kDrive")
+        elif what == "deleted" and side == "2":
+            add("delete", path, "local", "Auf kDrive gelöscht · löschen auf Unraid")
+        elif what == "deleted" and side == "1":
+            add("delete", path, "remote", "Auf Unraid gelöscht · löschen auf kDrive")
+
+    def take_bisync(text: str) -> bool:
+        matched_change = _BISYNC_CHANGE.search(text)
+        if not matched_change:
+            return False
+        what = matched_change.group("what").lower()
+        if what.startswith("file is new"):
+            kind = "new"
+        elif what.startswith("file is newer"):
+            kind = "newer"
+        else:
+            kind = "deleted"
+        add_bisync(matched_change.group("side"), kind, matched_change.group("path"))
+        return True
 
     def consider(level: str, msg: str, obj: str) -> None:
         nonlocal phase, delete_side
         low = msg.lower()
         if "directory modification time" in low or "directory modtime" in low:
             return
-        if obj and ("doesn't exist" in low or "does not exist" in low):
+        if obj and (
+            "doesn't exist" in low
+            or "does not exist" in low
+            or "not found at destination" in low
+            or ("need to transfer" in low and "not found" in low)
+        ):
             missing.add(obj)
             return
         if obj and "unchanged skipping" in low:
             missing.discard(obj)
+            return
+        if bisync_seen and ("skipped copy" in low or "skipped delete" in low or "skipped move" in low):
             return
         if "skipped copy" in low or "not copying as --dry-run" in low:
             if not obj and ": " in msg:
@@ -937,11 +1001,44 @@ def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
             return
         phase, delete_side = _note_phase(msg, phase, delete_side)
 
+    def drop_section() -> None:
+        dropped = rows[section_start:]
+        del rows[section_start:]
+        for row in dropped:
+            seen.discard((row["local"], row["remote"], row["kind"], row["direction"]))
+
+    def apply_combined(symbol: str, obj: str) -> None:
+        way = phase or direction
+        if way not in {"up", "down"}:
+            way = "up"
+        if symbol == "+":
+            add("copy", obj, way)
+        elif symbol == "*":
+            add("overwrite", obj, way)
+        elif symbol == "-":
+            if direction == "down":
+                side = "local"
+            elif direction == "up":
+                side = "remote"
+            else:
+                side = delete_side or "remote"
+            if deletes:
+                add("delete", obj, side)
+            elif side == "local":
+                add("keep", obj, side, "Nur auf Unraid, wird nicht verändert")
+            else:
+                add("keep", obj, side, "Nur auf kDrive, wird nicht verändert")
+        elif symbol == "!":
+            add("error", obj, way)
+
     for raw in text.splitlines():
-        line = raw.strip()
+        line = _ANSI.sub("", raw).strip()
         if not line:
             continue
         if line.startswith("# PLAN "):
+            in_combined = False
+            bisync_seen = False
+            section_start = len(rows)
             try:
                 marker = json.loads(line[7:])
             except json.JSONDecodeError:
@@ -950,9 +1047,19 @@ def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
             remote_root = str(marker.get("remote") or "")
             direction = str(marker.get("dir") or "up")
             version = bool(marker.get("version"))
+            deletes = bool(marker.get("deletes", True))
             phase = None
             delete_side = None
             missing.clear()
+            continue
+        if line == "# COMBINED":
+            drop_section()
+            in_combined = True
+            continue
+        if in_combined:
+            matched_change = re.match(r"^([+*\-!])\s+(.+)$", line)
+            if matched_change:
+                apply_combined(matched_change.group(1), matched_change.group(2).strip())
             continue
         if line.startswith("{"):
             try:
@@ -960,12 +1067,21 @@ def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
             except json.JSONDecodeError:
                 continue
             if isinstance(item, dict):
-                consider(str(item.get("level") or ""), str(item.get("msg") or ""), str(item.get("object") or ""))
+                msg = str(item.get("msg") or "")
+                if take_bisync(msg):
+                    continue
+                skipped = str(item.get("skipped") or "")
+                if skipped and f"skipped {skipped}" not in msg.lower():
+                    msg = f"Skipped {skipped} as --dry-run is set"
+                consider(str(item.get("level") or ""), msg, _object_name(item.get("object")))
             continue
         matched = plain.match(line)
         if not matched:
+            take_bisync(line)
             continue
         body = matched.group("body")
+        if take_bisync(body):
+            continue
         obj = ""
         msg = body
         if ": " in body:
@@ -986,6 +1102,8 @@ def plan_summary(actions: list[dict]) -> str:
         "delete": "löschen",
         "move": "verschieben",
         "time": "Zeitstempel",
+        "error": "Fehler",
+        "keep": "nur auf einer Seite",
     }
     counts: dict[str, int] = {}
     for item in actions:

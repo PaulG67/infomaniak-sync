@@ -78,7 +78,10 @@ async function reload() {
   const link = state.connection.ready
     ? (state.connection.mode === "rclone" ? state.connection.rclone_remote : "kDrive verbunden")
     : "kDrive offen";
-  meta.textContent = state.rclone ? `${link} · ${state.rclone}` : link;
+  const bits = [link];
+  if (state.rclone) bits.push(state.rclone);
+  if (state.app_version) bits.push(`Version ${state.app_version}`);
+  meta.textContent = bits.join(" · ");
   document.querySelectorAll(".tabs button").forEach((button) => {
     button.classList.toggle("active", button.dataset.tab === tabFor(parseRoute()));
   });
@@ -472,6 +475,7 @@ function renderLog(id) {
       <pre id="logbox" class="preview"></pre>
     </details>
   </div>`;
+  if (known?.dry_run) renderPlan([], 0, known.status || "running");
   pollLog(id);
 }
 
@@ -498,15 +502,12 @@ async function pollLog(id) {
 function renderPlan(actions, total, status) {
   const host = document.getElementById("plan");
   if (!host) return;
-  if (!actions.length) {
-    host.innerHTML = `<p class="meta">${status === "running" ? "Probelauf läuft …" : "Keine Dateien würden sich ändern."}</p>`;
-    return;
-  }
-  const body = actions.map((row) => `<tr>
+  const empty = status === "running" ? "Probelauf läuft …" : "Keine Dateien würden sich ändern.";
+  const body = actions.length ? actions.map((row) => `<tr>
     <td class="path ${row.local ? "" : "empty"}">${esc(row.local || "—")}</td>
     <td class="act ${esc(row.kind)}">${esc(row.label)}</td>
     <td class="path ${row.remote ? "" : "empty"}">${esc(row.remote || "—")}</td>
-  </tr>`).join("");
+  </tr>`).join("") : `<tr><td colspan="3" class="empty">${esc(empty)}</td></tr>`;
   const more = total > actions.length ? `<p class="meta">Die ersten ${actions.length} von ${total} Dateien.</p>` : "";
   host.innerHTML = `<div class="plan-wrap"><table class="plan">
     <thead><tr><th>Unraid</th><th>Vorgang</th><th>Infomaniak</th></tr></thead>

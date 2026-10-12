@@ -11,11 +11,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from flask import Flask, abort, jsonify, redirect, render_template, request, session
+from flask import Flask, abort, jsonify, make_response, redirect, render_template, request, session
 from werkzeug.exceptions import HTTPException
 
 from app import engine
 from app.runner import Runner, directory_names, probe
+from app.version import APP_VERSION
 from app.scheduler import start_scheduler
 from app.store import Store
 
@@ -86,6 +87,7 @@ def create_app() -> Flask:
         start_scheduler(runner)
 
     app = Flask(__name__)
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
     app.config["JSON_AS_ASCII"] = False
     app.json.ensure_ascii = False
     app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
@@ -174,6 +176,7 @@ def create_app() -> Flask:
             "shares_root": str(shares_root),
             "shares_ok": shares_root.is_dir(),
             "share_count": share_count(shares_root),
+            "app_version": APP_VERSION,
             "rclone": app.config["RCLONE"],
             "env_warning": app.config["ENV_WARNING"],
             "env_ready": env_ready,
@@ -203,13 +206,19 @@ def create_app() -> Flask:
         store.put_job(job)
         return engine.public_job(job)
 
+    @app.after_request
+    def no_cache_ui(response):
+        if request.path == "/" or request.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
     @app.get("/health")
     def health():
-        return {"ok": True}
+        return {"ok": True, "version": APP_VERSION}
 
     @app.get("/")
     def index():
-        return render_template("index.html", auth_required=bool(web_password))
+        return make_response(render_template("index.html", version=APP_VERSION, auth_required=bool(web_password)))
 
     @app.get("/login")
     def login_form():
