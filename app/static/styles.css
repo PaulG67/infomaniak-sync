@@ -89,7 +89,31 @@ button.ghost { background: transparent; }
 .banner.info { background: #e7f3f7; color: #0f3d56; }
 .form { display: grid; gap: .75rem; }
 label { display: grid; gap: .3rem; font-size: .92rem; font-weight: 600; }
-label.inline { display: flex; gap: .45rem; align-items: center; font-weight: 500; }
+label.inline {
+  display: grid;
+  grid-template-columns: 1.15rem minmax(0, 1fr);
+  column-gap: .7rem;
+  align-items: start;
+  width: 100%;
+  margin: 0;
+  padding: .65rem .75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+}
+label.inline:has(input:checked) {
+  border-color: #8eb8c8;
+  background: #f3fafc;
+}
+label.inline input[type="checkbox"] {
+  width: 1.15rem;
+  height: 1.15rem;
+  margin: .12rem 0 0;
+  accent-color: var(--accent);
+}
 input, select, textarea {
   width: 100%;
   padding: .55rem .65rem;
