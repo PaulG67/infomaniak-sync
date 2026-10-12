@@ -849,15 +849,20 @@ def _dry_paths(kind: str, direction: str, local_root: str, remote_root: str, obj
 
 
 def _note_phase(msg: str, phase: str | None, delete_side: str | None) -> tuple[str | None, str | None]:
-    low = msg.lower()
-    if "path1" in low and "path2" in low:
+    low = re.sub(r"\s+", " ", msg.lower()).replace(" - ", " ")
+    # Path1 ist Unraid, Path2 ist kDrive. "copy to Path1" schreibt nach Unraid.
+    if "copy to path1" in low or "copies to path1" in low:
+        phase = "down"
+    elif "copy to path2" in low or "copies to path2" in low:
+        phase = "up"
+    elif "path1" in low and "path2" in low:
         if "to path2" in low or "path1 to path2" in low:
             phase = "up"
         elif "to path1" in low or "path2 to path1" in low:
             phase = "down"
-    if "delet" in low and "path2" in low:
+    if "delet" in low and "path2" in low and "path1" not in low:
         delete_side = "remote"
-    elif "delet" in low and "path1" in low:
+    elif "delet" in low and "path1" in low and "path2" not in low:
         delete_side = "local"
     return phase, delete_side
 
@@ -978,7 +983,12 @@ def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
             way = phase or direction
             if way == "both":
                 way = "up"
-            add(kind, obj, way if way in {"up", "down"} else "up")
+            label = None
+            if kind == "copy" and way == "down":
+                label = "Neu auf kDrive · kopieren nach Unraid"
+            elif kind == "copy" and way == "up":
+                label = "Neu auf Unraid · kopieren nach kDrive"
+            add(kind, obj, way if way in {"up", "down"} else "up", label)
             return
         if "skipped delete" in low or "not deleting as --dry-run" in low:
             if not obj and ": " in msg:

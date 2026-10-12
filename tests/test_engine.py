@@ -273,7 +273,7 @@ def test_dry_run_table_copy_overwrite_delete():
     assert rows[0]["local"] == "photos/2024/a.jpg"
     assert rows[0]["remote"] == "Medien/Fotos/2024/a.jpg"
     assert rows[0]["kind"] == "copy"
-    assert "Unraid → kDrive" in rows[0]["label"]
+    assert "kopieren nach kDrive" in rows[0]["label"]
     assert rows[1]["kind"] == "overwrite"
     assert rows[1]["local"] == "photos/b.jpg"
     assert rows[2]["kind"] == "delete"
@@ -300,7 +300,7 @@ def test_dry_run_download_and_bisync_direction():
     assert rows[0]["kind"] == "copy"
     assert rows[0]["local"] == "docs/neu.txt"
     assert rows[0]["remote"] == "Archiv/neu.txt"
-    assert "kDrive → Unraid" in rows[0]["label"]
+    assert "kopieren nach Unraid" in rows[0]["label"]
     assert "Versionsordner" in rows[1]["label"]
     assert rows[2]["kind"] == "overwrite"
     assert "kDrive → Unraid" in rows[2]["label"]
@@ -346,6 +346,20 @@ INFO  : - Path2    Queue copy to Path1                 - /shares/Daten/users/361
     assert rows[0]["remote"] == "OpenCloud_Daten/361eed1e-a730-4693-8e98-a243a1a21399/Paul.docx"
     assert rows[0]["local"] == "Daten/users/361eed1e-a730-4693-8e98-a243a1a21399/Paul.docx"
     assert "Überschreiben" not in rows[0]["label"]
+    assert "Unraid →" not in rows[0]["label"]
+
+
+def test_dry_run_bisync_copy_to_unraid_follows_path1_phase():
+    text = """
+# PLAN {"local":"Daten/users","remote":"OpenCloud_Daten","dir":"both","version":false}
+INFO : - Path2    Do queued copies to                 - Path1
+{"level":"debug","msg":"Need to transfer - File not found at Destination","object":"361eed1e-a730-4693-8e98-a243a1a21399/Paul.docx"}
+{"level":"notice","msg":"Skipped copy as --dry-run is set (size 20)","object":"361eed1e-a730-4693-8e98-a243a1a21399/Paul.docx"}
+"""
+    rows, total = parse_dry_run(text)
+    assert total == 1
+    assert rows[0]["direction"] == "down"
+    assert rows[0]["label"] == "Neu auf kDrive · kopieren nach Unraid"
     assert "Unraid →" not in rows[0]["label"]
 
 
