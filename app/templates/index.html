@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>Infomaniak Sync</title>
+  <link rel="icon" href="/static/icon.svg" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <img src="/static/icon.svg" alt="" width="48" height="48" />
+      <div>
+        <h1>Infomaniak Sync</h1>
+        <p>Unraid-Shares mit kDrive abgleichen</p>
+      </div>
+      <div class="header-meta" id="header-meta"></div>
+    </header>
+    <nav class="tabs">
+      <button type="button" data-go="#/" data-tab="list">Aufträge</button>
+      <button type="button" data-go="#/connection" data-tab="connection">Verbindung</button>
+      <button type="button" data-go="#/history" data-tab="history">Verlauf</button>
+    </nav>
+    <div id="flash" class="flash hidden" role="alert"></div>
+    <div id="app"></div>
+  </div>
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

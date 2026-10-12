@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>Anmeldung · Infomaniak Sync</title>
+  <link rel="icon" href="/static/icon.svg" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="wrap narrow">
+    <header>
+      <img src="/static/icon.svg" alt="" width="48" height="48" />
+      <div>
+        <h1>Infomaniak Sync</h1>
+        <p>Anmeldung</p>
+      </div>
+    </header>
+    <form class="card form" method="post" action="/login">
+      {% if error %}<p class="flash">{{ error }}</p>{% endif %}
+      <label>Benutzer
+        <input name="user" autocomplete="username" required />
+      </label>
+      <label>Passwort
+        <input name="password" type="password" autocomplete="current-password" required />
+      </label>
+      <button type="submit">Anmelden</button>
+    </form>
+  </div>
+</body>
+</html>

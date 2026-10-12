@@ -1,0 +1,21 @@
+services:
+  infomaniak-sync:
+    image: ghcr.io/paulg67/infomaniak-sync:latest
+    build: .
+    container_name: infomaniak-sync
+    ports:
+      - "8794:8794"
+    environment:
+      - PUID=99
+      - PGID=100
+      - TZ=Europe/Zurich
+      - PORT=8794
+      - SHARES_ROOT=/shares
+      - KDRIVE_ID=
+      - KDRIVE_USER=
+      - KDRIVE_PASSWORD=
+      - WEB_PASSWORD=
+    volumes:
+      - /mnt/user/appdata/infomaniak-sync:/config
+      - /mnt/user:/shares
+    restart: unless-stopped
