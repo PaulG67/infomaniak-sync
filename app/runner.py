@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import signal
@@ -189,7 +190,23 @@ class Runner:
                     handle.write("# " + engine.format_command(argv) + "\n")
                 handle.write("\n")
             env = self.store.rclone_env()
-            for argv in commands:
+            for index, argv in enumerate(commands):
+                if dry_run:
+                    mapping = job["mappings"][index] if index < len(job.get("mappings") or []) else {}
+                    if job["mode"] == "bisync":
+                        way = "both"
+                    elif job["mode"] in {"upload", "mirror_up"}:
+                        way = "up"
+                    else:
+                        way = "down"
+                    marker = {
+                        "local": mapping.get("local") or "",
+                        "remote": mapping.get("remote") or "",
+                        "dir": way,
+                        "version": job.get("existing") == "version" or (job["mode"] == "bisync" and resync),
+                    }
+                    with log_path.open("a", encoding="utf-8") as handle:
+                        handle.write("# PLAN " + json.dumps(marker, ensure_ascii=False) + "\n")
                 if job["id"] in self._cancel:
                     status = "cancelled"
                     break
@@ -215,11 +232,16 @@ class Runner:
                 self.store.update_job(job["id"], mark)
             if status == "ok" and not dry_run and int(job.get("version_keep_days") or 0) > 0:
                 self._prune(job, log_path, env, backend)
-            summary = engine.summarize_log(log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else "")
+            log_text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
             if status == "cancelled":
                 summary = summary or "abgebrochen"
-            elif status == "error" and not summary:
-                summary = "rclone meldet einen Fehler"
+            elif status == "error":
+                summary = engine.summarize_log(log_text) or summary or "rclone meldet einen Fehler"
+            elif dry_run:
+                actions, _total = engine.parse_dry_run(log_text, limit=-1)
+                summary = engine.plan_summary(actions)
+            else:
+                summary = engine.summarize_log(log_text)
         except Exception as exc:
             status = "error"
             summary = str(exc)[:500]

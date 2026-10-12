@@ -465,8 +465,12 @@ function renderLog(id) {
   logOffset = 0;
   appEl.innerHTML = `<div class="card" id="logview" data-id="${esc(id)}">
     <div class="split"><h2>${esc(known?.job_name || "Protokoll")}</h2><button type="button" data-go="#/history">Zurück</button></div>
-    <p class="meta" id="log-status">${esc(known ? (STATUS[known.status] || known.status) : "")}</p>
-    <pre id="logbox" class="preview"></pre>
+    <p class="meta" id="log-status">${esc(known ? (STATUS[known.status] || known.status) : "")}${known?.dry_run ? " · Probelauf, es wird nichts verändert" : ""}</p>
+    <div id="plan"></div>
+    <details>
+      <summary>Protokoll</summary>
+      <pre id="logbox" class="preview"></pre>
+    </details>
   </div>`;
   pollLog(id);
 }
@@ -483,11 +487,31 @@ async function pollLog(id) {
       box.scrollTop = box.scrollHeight;
     }
     const status = document.getElementById("log-status");
-    if (status) status.textContent = STATUS[data.status] || data.status;
+    if (status) status.textContent = `${STATUS[data.status] || data.status}${data.dry_run ? " · Probelauf, es wird nichts verändert" : ""}`;
+    if (data.dry_run) renderPlan(data.plan || [], data.plan_total || 0, data.status);
     if (data.status === "running") setTimeout(() => pollLog(id), 2000);
   } catch (error) {
     showError(error.message);
   }
+}
+
+function renderPlan(actions, total, status) {
+  const host = document.getElementById("plan");
+  if (!host) return;
+  if (!actions.length) {
+    host.innerHTML = `<p class="meta">${status === "running" ? "Probelauf läuft …" : "Keine Dateien würden sich ändern."}</p>`;
+    return;
+  }
+  const body = actions.map((row) => `<tr>
+    <td class="path ${row.local ? "" : "empty"}">${esc(row.local || "—")}</td>
+    <td class="act ${esc(row.kind)}">${esc(row.label)}</td>
+    <td class="path ${row.remote ? "" : "empty"}">${esc(row.remote || "—")}</td>
+  </tr>`).join("");
+  const more = total > actions.length ? `<p class="meta">Die ersten ${actions.length} von ${total} Dateien.</p>` : "";
+  host.innerHTML = `<div class="plan-wrap"><table class="plan">
+    <thead><tr><th>Unraid</th><th>Vorgang</th><th>Infomaniak</th></tr></thead>
+    <tbody>${body}</tbody>
+  </table></div>${more}`;
 }
 
 function openModal(html) {

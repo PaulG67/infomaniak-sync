@@ -143,6 +143,14 @@ textarea { min-height: 7rem; resize: vertical; }
   font-size: .78rem;
   line-height: 1.45;
 }
+.plan-wrap { overflow-x: auto; margin-bottom: .8rem; }
+table.plan td.path, table.plan th { vertical-align: top; }
+table.plan td.path { font-family: ui-monospace, Consolas, monospace; font-size: .8rem; word-break: break-word; width: 38%; }
+table.plan th:nth-child(2), table.plan td.act { text-align: center; font-weight: 650; width: 24%; }
+table.plan td.act.copy { color: var(--accent); }
+table.plan td.act.overwrite { color: var(--warn); }
+table.plan td.act.delete { color: var(--danger); }
+table.plan td.empty { color: var(--muted); }
 table { width: 100%; border-collapse: collapse; font-size: .92rem; }
 th, td { text-align: left; padding: .55rem .35rem; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { color: var(--muted); font-size: .75rem; letter-spacing: .04em; text-transform: uppercase; }

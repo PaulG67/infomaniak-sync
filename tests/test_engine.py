@@ -11,7 +11,9 @@ from app.engine import (
     kdrive_target,
     next_occurrence,
     old_stamps,
+    parse_dry_run,
     parse_rclone_remotes,
+    plan_summary,
     read_rclone_section,
     prepare_job,
     render_filters,
@@ -226,3 +228,83 @@ def test_named_remote_in_command(tmp_path):
     )[0]
     assert "Infomaniak:Fotos" in argv
     assert any(part.startswith("Infomaniak:_Versionen/") for part in argv)
+
+
+def test_dry_run_uses_debug_json_log(tmp_path):
+    root = shares(tmp_path)
+    job = prepare_job(payload(existing="newer"), old=None, shares_root=root, now=NOW, tz=TZ)
+    dry = build_commands(
+        job,
+        shares_root=root,
+        config_path=tmp_path / "rclone.conf",
+        filter_path=tmp_path / "filters.txt",
+        workdir_base=tmp_path / "bisync",
+        version_root=tmp_path / "versions",
+        dry_run=True,
+        stamp="20261012-100000",
+    )[0]
+    live = build_commands(
+        job,
+        shares_root=root,
+        config_path=tmp_path / "rclone.conf",
+        filter_path=tmp_path / "filters.txt",
+        workdir_base=tmp_path / "bisync",
+        version_root=tmp_path / "versions",
+        stamp="20261012-100000",
+    )[0]
+    assert "--dry-run" in dry and "--use-json-log" in dry
+    assert dry[dry.index("--log-level") + 1] == "DEBUG"
+    assert "--use-json-log" not in live
+    assert live[live.index("--log-level") + 1] == "NOTICE"
+
+
+def test_dry_run_table_copy_overwrite_delete():
+    text = """
+# PLAN {"local":"photos","remote":"Medien/Fotos","dir":"up","version":false}
+{"level":"debug","msg":"Destination doesn't exist","object":"2024/a.jpg"}
+{"level":"notice","msg":"Skipped copy as --dry-run is set (size 12)","object":"2024/a.jpg"}
+{"level":"notice","msg":"Skipped copy as --dry-run is set (size 20)","object":"b.jpg"}
+{"level":"notice","msg":"Unchanged skipping","object":"gleich.jpg"}
+{"level":"notice","msg":"Skipped delete as --dry-run is set (size 4)","object":"old.jpg"}
+{"level":"notice","msg":"Skipped set directory modification time","object":"2024"}
+"""
+    rows, total = parse_dry_run(text)
+    assert total == 3
+    assert rows[0]["local"] == "photos/2024/a.jpg"
+    assert rows[0]["remote"] == "Medien/Fotos/2024/a.jpg"
+    assert rows[0]["kind"] == "copy"
+    assert "Unraid → kDrive" in rows[0]["label"]
+    assert rows[1]["kind"] == "overwrite"
+    assert rows[1]["local"] == "photos/b.jpg"
+    assert rows[2]["kind"] == "delete"
+    assert rows[2]["local"] == ""
+    assert rows[2]["remote"] == "Medien/Fotos/old.jpg"
+    assert "Löschen auf kDrive" in rows[2]["label"]
+    assert plan_summary(rows) == "Probelauf: 1 kopieren, 1 überschreiben, 1 löschen"
+
+
+def test_dry_run_download_and_bisync_direction():
+    text = """
+# PLAN {"local":"docs","remote":"Archiv","dir":"down","version":true}
+2026/10/12 12:00:00 DEBUG : neu.txt: Destination doesn't exist
+2026/10/12 12:00:00 NOTICE: neu.txt: Skipped copy as --dry-run is set (size 1)
+2026/10/12 12:00:01 NOTICE: alt.txt: Skipped copy as --dry-run is set (size 2)
+# PLAN {"local":"photos","remote":"Fotos","dir":"both","version":false}
+{"level":"info","msg":"Copying Unique Path2 files to Path1"}
+{"level":"notice","msg":"Skipped copy as --dry-run is set (size 3)","object":"von-kdrive.txt"}
+{"level":"info","msg":"Deleting on path1"}
+{"level":"notice","msg":"Skipped delete as --dry-run is set (size 4)","object":"weg.txt"}
+"""
+    rows, total = parse_dry_run(text)
+    assert total == 4
+    assert rows[0]["kind"] == "copy"
+    assert rows[0]["local"] == "docs/neu.txt"
+    assert rows[0]["remote"] == "Archiv/neu.txt"
+    assert "kDrive → Unraid" in rows[0]["label"]
+    assert "Versionsordner" in rows[1]["label"]
+    assert rows[2]["kind"] == "overwrite"
+    assert "kDrive → Unraid" in rows[2]["label"]
+    assert rows[3]["kind"] == "delete"
+    assert rows[3]["local"] == "photos/weg.txt"
+    assert rows[3]["remote"] == ""
+    assert "Löschen auf Unraid" in rows[3]["label"]

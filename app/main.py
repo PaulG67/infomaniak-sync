@@ -453,7 +453,9 @@ def create_app() -> Flask:
         except ValueError:
             offset = 0
         if not path.is_file():
-            return jsonify({"ok": True, "offset": 0, "text": "", "status": run["status"]})
+            return jsonify({"ok": True, "offset": 0, "text": "", "status": run["status"], "dry_run": bool(run["dry_run"]), "plan": [], "plan_total": 0})
+        full = path.read_text(encoding="utf-8", errors="replace") if run["dry_run"] else ""
+        plan, plan_total = engine.parse_dry_run(full) if run["dry_run"] else ([], 0)
         with path.open("rb") as handle:
             handle.seek(offset)
             chunk = handle.read(200_000)
@@ -463,6 +465,9 @@ def create_app() -> Flask:
                 "offset": offset + len(chunk),
                 "text": chunk.decode("utf-8", "replace"),
                 "status": run["status"],
+                "dry_run": bool(run["dry_run"]),
+                "plan": plan,
+                "plan_total": plan_total,
             }
         )
 

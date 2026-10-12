@@ -8,6 +8,7 @@ vendor = other, Benutzer = E-Mail, Passwort = Anwendungspasswort.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import shlex
 import uuid
@@ -709,7 +710,7 @@ def build_commands(
                 "--stats-log-level",
                 "NOTICE",
                 "--log-level",
-                "INFO" if job.get("verbose") else "NOTICE",
+                "DEBUG" if dry_run else ("INFO" if job.get("verbose") else "NOTICE"),
             ]
         )
         if job["mode"] == "bisync":
@@ -800,13 +801,197 @@ def build_commands(
             else:
                 argv.extend(["--backup-dir", str(local_backup), "--suffix", leaf, "--suffix-keep-extension"])
         if dry_run:
-            argv.append("--dry-run")
+            argv.extend(["--dry-run", "--use-json-log"])
         commands.append(argv)
     return commands
 
 
 def format_command(argv: list[str]) -> str:
     return shlex.join(argv)
+
+
+def _join_root(root: str, rel: str) -> str:
+    rel = (rel or "").replace("\\", "/").strip("/")
+    root = (root or "").replace("\\", "/").strip("/")
+    if not rel:
+        return root or "/"
+    return f"{root}/{rel}" if root else rel
+
+
+def _dry_label(kind: str, direction: str, version: bool) -> str:
+    arrow = {"up": "Unraid → kDrive", "down": "kDrive → Unraid"}.get(direction, "beide Seiten")
+    if kind == "copy":
+        return f"Kopieren · {arrow}"
+    if kind == "overwrite":
+        extra = ", alte Fassung in den Versionsordner" if version else ""
+        return f"Überschreiben{extra} · {arrow}"
+    if kind == "move":
+        return f"Verschieben · {arrow}"
+    if kind == "time":
+        return f"Zeitstempel · {arrow}"
+    if kind == "delete" and direction == "remote":
+        return "Löschen auf kDrive"
+    if kind == "delete" and direction == "local":
+        return "Löschen auf Unraid"
+    if kind == "delete":
+        return "Löschen"
+    return arrow
+
+
+def _dry_paths(kind: str, direction: str, local_root: str, remote_root: str, obj: str) -> tuple[str, str]:
+    if kind == "delete" and direction == "remote":
+        return "", _join_root(remote_root, obj)
+    if kind == "delete" and direction == "local":
+        return _join_root(local_root, obj), ""
+    return _join_root(local_root, obj), _join_root(remote_root, obj)
+
+
+def _note_phase(msg: str, phase: str | None, delete_side: str | None) -> tuple[str | None, str | None]:
+    low = msg.lower()
+    if "path1" in low and "path2" in low:
+        if "to path2" in low or "path1 to path2" in low:
+            phase = "up"
+        elif "to path1" in low or "path2 to path1" in low:
+            phase = "down"
+    if "delet" in low and "path2" in low:
+        delete_side = "remote"
+    elif "delet" in low and "path1" in low:
+        delete_side = "local"
+    return phase, delete_side
+
+
+def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
+    """Dateiaktionen eines rclone-Probelaufs: Unraid, Vorgang, kDrive."""
+    local_root = ""
+    remote_root = ""
+    direction = "up"
+    version = False
+    phase: str | None = None
+    delete_side: str | None = None
+    missing: set[str] = set()
+    rows: list[dict] = []
+    seen: set[tuple] = set()
+    plain = re.compile(
+        r"^(?:\d{4}/\d{2}/\d{2}[ T]\d{2}:\d{2}:\d{2}\s+)?(?:NOTICE|INFO|DEBUG)\s*:?\s*(?P<body>.*)$",
+        re.IGNORECASE,
+    )
+
+    def add(kind: str, obj: str, way: str) -> None:
+        if not obj or obj in {".", "/"}:
+            return
+        local, remote = _dry_paths(kind, way, local_root, remote_root, obj)
+        key = (local, remote, kind, way)
+        if key in seen:
+            return
+        seen.add(key)
+        rows.append(
+            {
+                "local": local,
+                "remote": remote,
+                "kind": kind,
+                "direction": way,
+                "label": _dry_label(kind, way, version),
+            }
+        )
+
+    def consider(level: str, msg: str, obj: str) -> None:
+        nonlocal phase, delete_side
+        low = msg.lower()
+        if "directory modification time" in low or "directory modtime" in low:
+            return
+        if obj and ("doesn't exist" in low or "does not exist" in low):
+            missing.add(obj)
+            return
+        if obj and "unchanged skipping" in low:
+            missing.discard(obj)
+            return
+        if "skipped copy" in low or "not copying as --dry-run" in low:
+            if not obj and ": " in msg:
+                obj, msg = msg.split(": ", 1)
+                low = msg.lower()
+            kind = "copy" if obj in missing else "overwrite"
+            missing.discard(obj)
+            way = phase or direction
+            if way == "both":
+                way = "up"
+            add(kind, obj, way if way in {"up", "down"} else "up")
+            return
+        if "skipped delete" in low or "not deleting as --dry-run" in low:
+            if not obj and ": " in msg:
+                obj = msg.split(": ", 1)[0]
+            if direction == "down":
+                side = "local"
+            elif direction == "up":
+                side = "remote"
+            else:
+                side = delete_side or "remote"
+            add("delete", obj, side)
+            return
+        if "skipped move" in low:
+            way = phase or direction
+            add("move", obj, "down" if way == "down" else "up")
+            return
+        if "modification time" in low and ("skipped" in low or "not updating" in low):
+            way = phase or direction
+            add("time", obj, "down" if way == "down" else "up")
+            return
+        phase, delete_side = _note_phase(msg, phase, delete_side)
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("# PLAN "):
+            try:
+                marker = json.loads(line[7:])
+            except json.JSONDecodeError:
+                continue
+            local_root = str(marker.get("local") or "")
+            remote_root = str(marker.get("remote") or "")
+            direction = str(marker.get("dir") or "up")
+            version = bool(marker.get("version"))
+            phase = None
+            delete_side = None
+            missing.clear()
+            continue
+        if line.startswith("{"):
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict):
+                consider(str(item.get("level") or ""), str(item.get("msg") or ""), str(item.get("object") or ""))
+            continue
+        matched = plain.match(line)
+        if not matched:
+            continue
+        body = matched.group("body")
+        obj = ""
+        msg = body
+        if ": " in body:
+            obj, msg = body.split(": ", 1)
+        consider("", msg, obj)
+    total = len(rows)
+    if limit >= 0:
+        rows = rows[:limit]
+    return rows, total
+
+
+def plan_summary(actions: list[dict]) -> str:
+    if not actions:
+        return "Probelauf: keine Änderungen"
+    names = {
+        "copy": "kopieren",
+        "overwrite": "überschreiben",
+        "delete": "löschen",
+        "move": "verschieben",
+        "time": "Zeitstempel",
+    }
+    counts: dict[str, int] = {}
+    for item in actions:
+        counts[item["kind"]] = counts.get(item["kind"], 0) + 1
+    parts = [f"{counts[kind]} {names[kind]}" for kind in names if kind in counts]
+    return "Probelauf: " + ", ".join(parts)
 
 
 def summarize_log(text: str) -> str:
