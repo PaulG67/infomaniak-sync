@@ -121,7 +121,7 @@ input, select, textarea {
   border-radius: 10px;
   background: #fff;
 }
-textarea { min-height: 7rem; resize: vertical; }
+textarea.script-editor { min-height: 18rem; font-family: ui-monospace, Consolas, monospace; font-size: .82rem; }
 .editor { display: grid; gap: 1rem; }
 .mapping {
   display: grid;

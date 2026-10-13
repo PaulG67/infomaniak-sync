@@ -49,6 +49,14 @@ Dann **Docker → infomaniak-sync → Force Update**. Neue Template-Felder zusä
 
 Angleichen löscht Dateien auf der Zielseite. Die Oberfläche verlangt dafür eine Bestätigung. Der beidseitige Zeitplan startet erst nach einem manuellen Erstabgleich. Dabei landen überschriebene Fassungen im Versionsordner.
 
+Ordner und Dateien namens `.oc-nodes` (OpenCloud-Metadaten) werden nicht abgeglichen und erscheinen nicht in der Probelauf-Tabelle.
+
+## User Scripts
+
+Der Reiter **User Scripts** zeigt die Skripte des Unraid-Plugins. Inhalt, Intervall und ob der Zeitplan aktiv ist, werden im Plugin gespeichert. Dafür müssen im Container die Pfade `User Scripts` und `User Scripts Laufzeit` eingebunden sein. Nach einem Force Update einmal **Edit → Apply**, damit die neuen Felder am laufenden Container hängen.
+
+Eine eigene Cron-Zeit übernimmt Unraid, wenn in User Scripts **Apply Schedule** geklickt wird oder der Server neu startet. Die festen Intervalle gelten mit dem Laufzeit-Pfad sofort.
+
 ## Docker Compose
 
 ```yaml
@@ -69,6 +77,8 @@ services:
       - /mnt/user/appdata/infomaniak-sync:/config
       - /mnt/user:/shares
       - /boot/config/plugins/rclone/.rclone.conf:/rclone/rclone.conf:ro
+      - /boot/config/plugins/user.scripts:/user-scripts
+      - /tmp/user.scripts:/user-scripts-live
 ```
 
 ## Image

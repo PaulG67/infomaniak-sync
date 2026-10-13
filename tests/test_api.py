@@ -29,15 +29,15 @@ def test_health_and_create_job(env):
     client = create_app().test_client()
     health = client.get("/health")
     assert health.status_code == 200
-    assert health.get_json()["version"] == "1.1.3"
+    assert health.get_json()["version"] == "1.1.4"
     page = client.get("/")
     html = page.get_data(as_text=True)
-    assert "Version 1.1.3" in html
-    assert "app.js?v=1.1.3" in html
+    assert "Version 1.1.4" in html
+    assert "app.js?v=1.1.4" in html
     assert page.headers["Cache-Control"] == "no-store"
     state = client.get("/api/state").get_json()
     assert state["share_count"] == 2
-    assert state["app_version"] == "1.1.3"
+    assert state["app_version"] == "1.1.4"
     assert state["blank"]["mode"] == "upload"
     created = client.post(
         "/api/jobs",

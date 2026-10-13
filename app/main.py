@@ -19,6 +19,7 @@ from app.runner import Runner, directory_names, probe
 from app.version import APP_VERSION
 from app.scheduler import start_scheduler
 from app.store import Store
+from app.userscripts import UserScripts
 
 log = logging.getLogger("app")
 
@@ -125,6 +126,10 @@ def create_app() -> Flask:
         env_warning = str(exc)
         log.warning("Container-Parameter ignoriert: %s", exc)
     store.interrupt_stale_runs()
+    scripts = UserScripts(
+        Path(os.environ.get("USER_SCRIPTS_DIR", "/user-scripts")),
+        Path(os.environ.get("USER_SCRIPTS_LIVE", "/user-scripts-live")),
+    )
     runner = Runner(store, shares_root, tz)
     if os.environ.get("SYNC_SCHEDULER", "1") != "0":
         start_scheduler(runner)
@@ -147,7 +152,7 @@ def create_app() -> Flask:
             pass
     app.secret_key = secret_path.read_bytes()
     app.config["STORE"] = store
-    app.config["RUNNER"] = runner
+    app.config["SCRIPTS"] = scripts
     app.config["SHARES"] = shares_root
     app.config["TZ"] = tz
     app.config["TZ_NAME"] = str(tz)
@@ -235,6 +240,7 @@ def create_app() -> Flask:
             "runs": public_runs(),
             "active": runner.active(),
             "blank": engine.blank_job(),
+            "scripts_available": scripts.available(),
         }
 
     def payload() -> dict:
@@ -527,6 +533,29 @@ def create_app() -> Flask:
                 "plan_total": plan_total,
             }
         )
+
+    @app.get("/api/scripts")
+    def api_scripts():
+        return jsonify({"ok": True, "available": scripts.available(), "scripts": scripts.list_scripts()})
+
+    @app.get("/api/scripts/<script_id>")
+    def api_script(script_id: str):
+        try:
+            return jsonify({"ok": True, "script": scripts.get_script(script_id)})
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 404
+
+    @app.put("/api/scripts/<script_id>")
+    def api_script_save(script_id: str):
+        data = payload()
+        saved = scripts.save_script(
+            script_id,
+            str(data.get("script") or ""),
+            enabled=engine.as_bool(data.get("enabled"), True),
+            frequency=str(data.get("frequency") or ""),
+            custom=str(data.get("custom") or ""),
+        )
+        return jsonify({"ok": True, "script": saved})
 
     @app.errorhandler(ValueError)
     def value_error(exc: ValueError):

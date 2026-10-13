@@ -65,6 +65,13 @@ SYSTEM_PATTERNS = (
     "**/#recycle/**",
     "appdata/infomaniak-sync/**",
 )
+# OpenCloud legt Metadaten in Ordner und Dateien namens .oc-nodes. Die gehören nicht in den Abgleich.
+OC_NODE_PATTERNS = (
+    ".oc-nodes",
+    ".oc-nodes/**",
+    "**/.oc-nodes",
+    "**/.oc-nodes/**",
+)
 
 DURATION = re.compile(r"^(\d+(\.\d+)?(ns|us|ms|s|m|h|d|w|M|y))+$")
 SIZE = re.compile(r"^\d+(\.\d+)?([KkMmGgTtPpEe]i?)?[Bb]?$")
@@ -293,8 +300,13 @@ def remote_spec(remote_name: str, path: str = "") -> str:
     return f"{remote_name}:{path}" if path else f"{remote_name}:"
 
 
+def is_oc_nodes(path: str) -> bool:
+    parts = [part for part in str(path or "").replace("\\", "/").split("/") if part and part != "."]
+    return any(part == ".oc-nodes" for part in parts)
+
+
 def render_filters(job: dict, extra_excludes: list[str] | None = None) -> str:
-    lines: list[str] = []
+    lines: list[str] = [f"- {pat}" for pat in OC_NODE_PATTERNS]
     if job.get("exclude_system", True):
         lines.extend(f"- {pat}" for pat in SYSTEM_PATTERNS)
     version_dir = str(job.get("version_dir") or "").strip("/")
@@ -938,7 +950,7 @@ def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
         if not obj or obj in {".", "/"}:
             return
         obj = obj.replace("\\", "/").strip().strip("/")
-        if not obj:
+        if not obj or is_oc_nodes(obj):
             return
         local, remote = _dry_paths(kind, way, local_root, remote_root, obj)
         key = (local, remote, kind, way)

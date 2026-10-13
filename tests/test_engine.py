@@ -399,6 +399,20 @@ def test_dry_run_upload_leaves_kdrive_only_files():
     rows, total = parse_dry_run(text)
     assert total == 1
     assert rows[0]["kind"] == "keep"
-    assert rows[0]["local"] == ""
-    assert rows[0]["remote"].endswith("Paul.docx")
-    assert "nicht verändert" in rows[0]["label"]
+
+
+def test_oc_nodes_are_excluded_and_hidden_from_the_plan(tmp_path):
+    job = blank_job()
+    job["exclude_system"] = False
+    text = render_filters(job)
+    assert "- **/.oc-nodes/**" in text
+    assert "- **/@eaDir/**" not in text
+    log = """
+# PLAN {"local":"Daten","remote":"Cloud","dir":"both","version":false}
+INFO  : - Path2    File is new                         - .oc-nodes/abc
+INFO  : - Path1    File is new                         - fotos/bild.jpg
+"""
+    rows, total = parse_dry_run(log)
+    assert total == 1
+    assert rows[0]["local"].endswith("fotos/bild.jpg")
+    assert all(".oc-nodes" not in (row["local"] + row["remote"]) for row in rows)

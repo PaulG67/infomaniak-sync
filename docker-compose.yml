@@ -20,4 +20,6 @@ services:
       - /mnt/user/appdata/infomaniak-sync:/config
       - /mnt/user:/shares
       - /boot/config/plugins/rclone/.rclone.conf:/rclone/rclone.conf:ro
+      - /boot/config/plugins/user.scripts:/user-scripts
+      - /tmp/user.scripts:/user-scripts-live
     restart: unless-stopped
