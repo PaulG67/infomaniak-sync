@@ -25,6 +25,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       gosu \
       passwd \
     && curl -fsSL https://rclone.org/install.sh | bash \
+    && test -x /usr/bin/rclone \
+    && /usr/bin/rclone version \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

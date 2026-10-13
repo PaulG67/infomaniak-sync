@@ -29,15 +29,15 @@ def test_health_and_create_job(env):
     client = create_app().test_client()
     health = client.get("/health")
     assert health.status_code == 200
-    assert health.get_json()["version"] == "1.1.2"
+    assert health.get_json()["version"] == "1.1.3"
     page = client.get("/")
     html = page.get_data(as_text=True)
-    assert "Version 1.1.2" in html
-    assert "app.js?v=1.1.2" in html
+    assert "Version 1.1.3" in html
+    assert "app.js?v=1.1.3" in html
     assert page.headers["Cache-Control"] == "no-store"
     state = client.get("/api/state").get_json()
     assert state["share_count"] == 2
-    assert state["app_version"] == "1.1.2"
+    assert state["app_version"] == "1.1.3"
     assert state["blank"]["mode"] == "upload"
     created = client.post(
         "/api/jobs",
@@ -202,6 +202,29 @@ def test_manual_connection_accepts_rclone_url_and_obscured_pass(env):
     assert "url = https://260259.connect.kdrive.infomaniak.com" in conf
     assert "user = paul@gehring.li" in conf
     assert "pass = OBSCURED-PASS" in conf
+
+
+def test_probe_rclone_reports_version_and_missing_binary(monkeypatch):
+    from app.main import probe_rclone
+
+    class Proc:
+        stdout = "rclone v1.75.2\n- os/version: test\n"
+        stderr = ""
+        returncode = 0
+
+    monkeypatch.setattr("app.main.rclone_binary", lambda: "rclone")
+    monkeypatch.setattr("app.main.subprocess.run", lambda *args, **kwargs: Proc())
+    version, error = probe_rclone()
+    assert version == "rclone v1.75.2"
+    assert error == ""
+
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("rclone")
+
+    monkeypatch.setattr("app.main.subprocess.run", missing)
+    version, error = probe_rclone()
+    assert version is None
+    assert "nicht vorhanden" in error
 
 
 def test_run_requires_connection(env):

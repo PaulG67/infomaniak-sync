@@ -30,6 +30,24 @@ elif [ ! -f "$SRC" ]; then
 fi
 export RCLONE_CONFIG_FILE="$DEST"
 
+# Der Prozess läuft als PUID, nicht als root. HOME=/root ist dann nicht lesbar,
+# und rclone version bricht ab, bevor es eine Version ausgibt.
+export HOME=/tmp
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+touch /tmp/rclone-probe.conf
+chmod 644 /tmp/rclone-probe.conf
+if [ ! -x /usr/bin/rclone ]; then
+  echo "rclone fehlt unter /usr/bin/rclone" >&2
+elif command -v timeout >/dev/null 2>&1; then
+  timeout 8 /usr/bin/rclone version --config /tmp/rclone-probe.conf > /tmp/rclone-probe.txt 2>/tmp/rclone-probe.err || true
+  if [ -s /tmp/rclone-probe.txt ]; then
+    head -n 1 /tmp/rclone-probe.txt
+  else
+    echo "rclone version ist fehlgeschlagen" >&2
+  fi
+fi
+
 exec gosu "${PUID}:${PGID}" \
   gunicorn "app.main:app" \
     --bind "0.0.0.0:${PORT:-8794}" \

@@ -128,7 +128,10 @@ function banners() {
       : "Die kDrive-Verbindung fehlt noch. Unter Verbindung die rclone-Datei wählen oder Zugangsdaten eintragen.";
     parts.push(`<div class="banner info">${missing}</div>`);
   }
-  if (!state.rclone) parts.push(`<div class="banner warn">rclone wurde im Container nicht gefunden.</div>`);
+  if (!state.rclone) {
+    const why = state.rclone_error ? ` ${esc(state.rclone_error)}` : "";
+    parts.push(`<div class="banner warn">rclone wurde im Container nicht gefunden.${why}</div>`);
+  }
   return parts.join("");
 }
 

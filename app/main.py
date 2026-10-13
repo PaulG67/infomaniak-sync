@@ -30,19 +30,62 @@ def load_tz(name: str) -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
-def rclone_version() -> str | None:
+def rclone_binary() -> str:
+    for candidate in ("/usr/bin/rclone", "/usr/local/bin/rclone"):
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    found = shutil.which("rclone")
+    return found or "rclone"
+
+
+def _blank_rclone_config() -> str:
+    folder = Path("/tmp") if Path("/tmp").is_dir() else Path(os.environ.get("TEMP") or ".")
+    path = folder / "infomaniak-rclone-probe.conf"
+    try:
+        if not path.exists():
+            path.write_text("", encoding="utf-8")
+            path.chmod(0o644)
+    except OSError:
+        return ""
+    return str(path)
+
+
+def probe_rclone() -> tuple[str | None, str]:
+    """Version von rclone, oder der Grund, warum der Aufruf scheitert."""
+    binary = rclone_binary()
+    env = os.environ.copy()
+    if not env.get("HOME") or env.get("HOME") == "/root":
+        env["HOME"] = "/tmp" if Path("/tmp").is_dir() else str(Path(os.environ.get("TEMP") or "."))
+    env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    args = [binary, "version"]
+    blank = _blank_rclone_config()
+    if blank:
+        args.extend(["--config", blank])
     try:
         proc = subprocess.run(
-            ["rclone", "version"],
+            args,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=8,
             check=False,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            encoding="utf-8",
+            errors="replace",
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    lines = (proc.stdout or "").splitlines()
-    return lines[0].strip() if lines else None
+    except FileNotFoundError:
+        return None, f"{binary} ist nicht vorhanden"
+    except OSError as exc:
+        return None, str(exc)
+    except subprocess.TimeoutExpired:
+        return None, "rclone version antwortet nicht"
+    lines = [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]
+    if lines:
+        return lines[0], ""
+    detail = (proc.stderr or "").strip().replace("\n", " ")
+    if not detail:
+        detail = f"rclone version endete ohne Ausgabe (Code {proc.returncode})"
+    return None, detail[:180]
 
 
 def share_count(root: Path) -> int:
@@ -111,7 +154,11 @@ def create_app() -> Flask:
     app.config["WEB_PASSWORD"] = web_password
     app.config["WEB_USER"] = web_user
     app.config["ENV_WARNING"] = env_warning
-    app.config["RCLONE"] = rclone_version()
+    rclone_text, rclone_error = probe_rclone()
+    app.config["RCLONE"] = rclone_text
+    app.config["RCLONE_ERROR"] = rclone_error
+    if rclone_error:
+        log.warning("rclone nicht bereit: %s", rclone_error)
 
     def now() -> datetime:
         return datetime.now(tz)
@@ -178,6 +225,7 @@ def create_app() -> Flask:
             "share_count": share_count(shares_root),
             "app_version": APP_VERSION,
             "rclone": app.config["RCLONE"],
+            "rclone_error": app.config["RCLONE_ERROR"],
             "env_warning": app.config["ENV_WARNING"],
             "env_ready": env_ready,
             "auth_required": bool(app.config["WEB_PASSWORD"]),
