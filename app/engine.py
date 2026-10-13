@@ -65,13 +65,9 @@ SYSTEM_PATTERNS = (
     "**/#recycle/**",
     "appdata/infomaniak-sync/**",
 )
-# OpenCloud legt Metadaten in Ordner und Dateien namens .oc-nodes. Die gehören nicht in den Abgleich.
-OC_NODE_PATTERNS = (
-    ".oc-nodes",
-    ".oc-nodes/**",
-    "**/.oc-nodes",
-    "**/.oc-nodes/**",
-)
+HOST_SHARES = "/mnt/user"
+HOST_CONFIG = "/mnt/user/appdata/infomaniak-sync"
+HOST_RCLONE_CONFIG = "/boot/config/plugins/rclone/.rclone.conf"
 
 DURATION = re.compile(r"^(\d+(\.\d+)?(ns|us|ms|s|m|h|d|w|M|y))+$")
 SIZE = re.compile(r"^\d+(\.\d+)?([KkMmGgTtPpEe]i?)?[Bb]?$")
@@ -301,12 +297,13 @@ def remote_spec(remote_name: str, path: str = "") -> str:
 
 
 def is_oc_nodes(path: str) -> bool:
+    """Nur für die Probelauf-Tabelle: Ordner .oc-nodes und Dateien darin."""
     parts = [part for part in str(path or "").replace("\\", "/").split("/") if part and part != "."]
     return any(part == ".oc-nodes" for part in parts)
 
 
 def render_filters(job: dict, extra_excludes: list[str] | None = None) -> str:
-    lines: list[str] = [f"- {pat}" for pat in OC_NODE_PATTERNS]
+    lines: list[str] = []
     if job.get("exclude_system", True):
         lines.extend(f"- {pat}" for pat in SYSTEM_PATTERNS)
     version_dir = str(job.get("version_dir") or "").strip("/")
@@ -820,6 +817,119 @@ def build_commands(
 
 def format_command(argv: list[str]) -> str:
     return shlex.join(argv)
+
+
+def _prefix_rest(token: str, root: str) -> str | None:
+    root = root.rstrip("/\\")
+    if not root:
+        return None
+    if token == root:
+        return ""
+    for sep in ("/", "\\"):
+        prefix = root + sep
+        if token.startswith(prefix):
+            return token[len(prefix) :].replace("\\", "/")
+    return None
+
+
+def _quote_var(var: str, rest: str) -> str:
+    rest = rest.strip("/")
+    if not rest:
+        return f'"{var}"'
+    safe = rest.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
+    return f'"{var}/{safe}"'
+
+
+def _shell_word(token: str, *, filter_path: str, config_path: str, shares_root: str, config_dir: str) -> str:
+    if token == filter_path:
+        return '"$FILTER"'
+    if token == config_path:
+        return '"$RCLONE_CONFIG"'
+    pairs = sorted(
+        ((shares_root, "${SHARES}"), (config_dir, "${CONFIG_DIR}")),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+    for root, var in pairs:
+        rest = _prefix_rest(token, root)
+        if rest is not None:
+            return _quote_var(var, rest)
+    return shlex.quote(token)
+
+
+def host_sync_script(
+    job: dict,
+    *,
+    shares_root: Path,
+    config_dir: Path,
+    remote_name: str,
+    extra_excludes: list[str] | None = None,
+    host_shares: str = HOST_SHARES,
+    host_config: str = HOST_CONFIG,
+    host_rclone_config: str = HOST_RCLONE_CONFIG,
+) -> tuple[str, str]:
+    """Shell-Skript für Unraid User Scripts. Nutzt rclone, weil kDrive WebDAV spricht."""
+    filters = render_filters(job, extra_excludes)
+    config_base = config_dir.resolve()
+    shares_base = shares_root.resolve()
+    filter_path = config_base / "filters" / f"{job['id']}.txt"
+    config_path = config_base / "rclone-active.conf"
+    commands = build_commands(
+        job,
+        shares_root=shares_base,
+        config_path=config_path,
+        filter_path=filter_path,
+        workdir_base=config_base / "bisync",
+        version_root=config_base / "versions",
+        dry_run=False,
+        resync=False,
+        stamp="lauf",
+        remote_name=remote_name,
+    )
+    rendered = []
+    for argv in commands:
+        words = [
+            _shell_word(
+                part,
+                filter_path=str(filter_path),
+                config_path=str(config_path),
+                shares_root=str(shares_base),
+                config_dir=str(config_base),
+            )
+            for part in argv
+        ]
+        rendered.append(" ".join(words))
+    delim = "INFOMANIAK_FILTER"
+    while delim in filters:
+        delim += "X"
+    name = " ".join(str(job.get("name") or "Auftrag").split()) or "Auftrag"
+    body = filters if filters.endswith("\n") or not filters else filters + "\n"
+    script = (
+        "#!/bin/bash\n"
+        f"# Sync-Skript für den Auftrag {name}\n"
+        "# In Unraid User Scripts einfügen. kDrive wird mit rclone über WebDAV erreicht.\n"
+        "# Pfade entsprechen dem Unraid-Template und können hier angepasst werden.\n"
+        "set -euo pipefail\n"
+        f"SHARES={shlex.quote(host_shares)}\n"
+        f"CONFIG_DIR={shlex.quote(host_config)}\n"
+        f"RCLONE_CONFIG={shlex.quote(host_rclone_config)}\n"
+        'if [[ ! -f "$RCLONE_CONFIG" ]]; then\n'
+        '  echo "rclone-Konfiguration fehlt: $RCLONE_CONFIG" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        "if ! command -v rclone >/dev/null 2>&1; then\n"
+        '  echo "rclone ist auf diesem System nicht vorhanden" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        'FILTER="$(mktemp)"\n'
+        "trap 'rm -f \"$FILTER\"' EXIT\n"
+        f"cat > \"$FILTER\" << '{delim}'\n"
+        f"{body}"
+        f"{delim}\n"
+        + "\n".join(rendered)
+        + "\n"
+    )
+    return f"{slugify(job['name'], job['id'])}.sh", script
 
 
 def _join_root(root: str, rel: str) -> str:

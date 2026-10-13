@@ -29,15 +29,17 @@ def test_health_and_create_job(env):
     client = create_app().test_client()
     health = client.get("/health")
     assert health.status_code == 200
-    assert health.get_json()["version"] == "1.1.4"
+    assert health.get_json()["version"] == "1.1.5"
     page = client.get("/")
     html = page.get_data(as_text=True)
-    assert "Version 1.1.4" in html
-    assert "app.js?v=1.1.4" in html
+    assert "Version 1.1.5" in html
+    assert "app.js?v=1.1.5" in html
+    assert "User Scripts" not in html
     assert page.headers["Cache-Control"] == "no-store"
     state = client.get("/api/state").get_json()
     assert state["share_count"] == 2
-    assert state["app_version"] == "1.1.4"
+    assert state["app_version"] == "1.1.5"
+    assert "scripts_available" not in state
     assert state["blank"]["mode"] == "upload"
     created = client.post(
         "/api/jobs",
@@ -55,6 +57,13 @@ def test_health_and_create_job(env):
     assert job["mappings"][0]["remote"] == "Medien/Fotos"
     assert job["next_run"]
     assert "Medien/Fotos" in job["description"]
+    exported = client.get(f"/api/jobs/{job['id']}/script")
+    assert exported.status_code == 200, exported.get_json()
+    body = exported.get_json()
+    assert body["filename"].endswith(".sh")
+    assert body["script"].startswith("#!/bin/bash")
+    assert "Medien/Fotos" in body["script"]
+    assert ".oc-nodes" not in body["script"]
     missing = client.post("/api/jobs", json={"name": "X", "mappings": [{"local": "photos/../../etc", "remote": "x"}]})
     assert missing.status_code == 400
     mirror = client.post("/api/jobs", json={"name": "Spiegel", "mode": "mirror_down", "mappings": [{"local": "docs", "remote": "Docs"}]})

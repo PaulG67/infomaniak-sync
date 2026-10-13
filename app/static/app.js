@@ -34,15 +34,14 @@ function parseRoute() {
   const parts = (location.hash || "#/").replace(/^#/, "").split("/").filter(Boolean);
   if (parts[0] === "new") return { name: "edit", id: null };
   if (parts[0] === "job" && parts[1]) return { name: "edit", id: decodeURIComponent(parts[1]) };
-  if (parts[0] === "scripts") return { name: "scripts" };
-  if (parts[0] === "script" && parts[1]) return { name: "script", id: decodeURIComponent(parts[1]) };
+  if (parts[0] === "connection") return { name: "connection" };
   if (parts[0] === "history") return { name: "history" };
   if (parts[0] === "run" && parts[1]) return { name: "log", id: decodeURIComponent(parts[1]) };
   return { name: "list" };
 }
 
 function tabFor(route) {
-  if (route.name === "scripts" || route.name === "script") return "scripts";
+  if (route.name === "connection") return "connection";
   if (route.name === "history" || route.name === "log") return "history";
   return "list";
 }
@@ -55,8 +54,51 @@ function fmtTime(iso) {
 }
 
 function showError(message) {
+  flashEl.classList.remove("ok");
   flashEl.textContent = message || "";
   flashEl.classList.toggle("hidden", !message);
+}
+
+function showNote(message) {
+  flashEl.classList.add("ok");
+  flashEl.textContent = message || "";
+  flashEl.classList.toggle("hidden", !message);
+}
+
+function downloadText(filename, text) {
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function copyText(text) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    /* HTTP-Seiten erlauben die Zwischenablage oft nicht. */
+  }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  document.body.appendChild(area);
+  area.select();
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } catch {
+    copied = false;
+  }
+  area.remove();
+  return copied;
 }
 
 async function api(path, options = {}) {
@@ -112,8 +154,6 @@ function paint() {
   });
   if (route.name === "edit") return renderEdit(route.id);
   if (route.name === "connection") return renderConnection();
-  if (route.name === "scripts") return renderScripts();
-  if (route.name === "script") return renderScript(route.id);
   if (route.name === "history") return renderHistory();
   if (route.name === "log") return renderLog(route.id);
   return renderList();
@@ -136,65 +176,6 @@ function banners() {
     parts.push(`<div class="banner warn">rclone wurde im Container nicht gefunden.${why}</div>`);
   }
   return parts.join("");
-}
-
-const SCRIPT_INTERVALS = [
-  ["hourly", "stündlich"],
-  ["daily", "täglich"],
-  ["weekly", "wöchentlich"],
-  ["monthly", "monatlich"],
-  ["start", "beim Start des Arrays"],
-  ["stop", "beim Stoppen des Arrays"],
-  ["boot", "nur beim ersten Array-Start"],
-  ["custom", "eigene Cron-Zeit"],
-];
-
-function renderScripts() {
-  appEl.innerHTML = `${banners()}<div class="card"><p>User Scripts werden geladen …</p></div>`;
-  api("/api/scripts").then((data) => {
-    if (parseRoute().name !== "scripts") return;
-    if (!data.available) {
-      appEl.innerHTML = `${banners()}<section class="card"><h2>User Scripts</h2><p>Der Ordner des Plugins ist nicht eingebunden. Im Unraid-Template die beiden neuen Pfade prüfen und den Container mit Edit → Apply neu starten:</p><p class="meta">User Scripts: /boot/config/plugins/user.scripts<br>User Scripts Laufzeit: /tmp/user.scripts</p></section>`;
-      return;
-    }
-    const rows = (data.scripts || []).map((item) => `<tr>
-      <td><strong>${esc(item.name)}</strong><div class="meta">${esc(item.description || item.id)}</div></td>
-      <td>${esc(item.frequency_label)}</td>
-      <td><span class="pill ${item.enabled ? "ok" : "warn"}">${item.enabled ? "aktiv" : "aus"}</span></td>
-      <td><button type="button" data-act="open-script" data-id="${esc(item.id)}">Anpassen</button></td>
-    </tr>`).join("");
-    const body = rows || `<tr><td colspan="4" class="empty">Keine Skripte im Plugin User Scripts.</td></tr>`;
-    appEl.innerHTML = `${banners()}<section class="card">
-      <h2>User Scripts</h2>
-      <p class="hint">Vorhandene Skripte des Unraid-Plugins. Inhalt, Intervall und ob der Zeitplan aktiv ist, werden dort gespeichert.</p>
-      <div class="plan-wrap"><table class="plan scripts">
-        <thead><tr><th>Skript</th><th>Intervall</th><th>Zeitplan</th><th></th></tr></thead>
-        <tbody>${body}</tbody>
-      </table></div>
-    </section>`;
-  }).catch((error) => showError(error.message));
-}
-
-function renderScript(id) {
-  appEl.innerHTML = `${banners()}<div class="card"><p>Skript wird geladen …</p></div>`;
-  api(`/api/scripts/${encodeURIComponent(id)}`).then((data) => {
-    if (parseRoute().name !== "script") return;
-    const item = data.script;
-    const chosen = item.frequency === "disabled" ? (item.custom ? "custom" : "daily") : item.frequency;
-    const options = SCRIPT_INTERVALS.map(([value, label]) => `<option value="${value}" ${value === chosen ? "selected" : ""}>${label}</option>`).join("");
-    appEl.innerHTML = `${banners()}<form id="script-form" class="card editor">
-      <div class="split"><h2>${esc(item.name)}</h2><button type="button" class="ghost" data-go="#/scripts">Zurück</button></div>
-      <p class="meta">${esc(item.description || item.id)}</p>
-      <label class="inline check"><input type="checkbox" name="enabled" ${item.enabled ? "checked" : ""} /> Zeitplan aktiv</label>
-      <label>Intervall<select name="frequency">${options}</select></label>
-      <label data-custom ${chosen === "custom" ? "" : "hidden"}>Cron-Zeit<input name="custom" value="${esc(item.custom || "")}" placeholder="30 3 * * *" spellcheck="false" /><span class="hint">Fünf Felder: Minute Stunde Tag Monat Wochentag. Gilt nach Apply Schedule in User Scripts oder beim nächsten Start von Unraid.</span></label>
-      <label>Skript<textarea class="script-editor" name="script" spellcheck="false">${esc(item.script || "")}</textarea></label>
-      <div class="row"><button class="primary" type="submit">Speichern</button></div>
-    </form>`;
-  }).catch((error) => {
-    showError(error.message);
-    appEl.innerHTML = `${banners()}<section class="card"><p>Skript nicht gefunden.</p><button type="button" data-go="#/scripts">Zurück</button></section>`;
-  });
 }
 
 function renderList() {
@@ -220,6 +201,11 @@ function renderList() {
         ${job.mode === "bisync" && !job.bisync_ready ? `<button type="button" data-act="resync" data-id="${esc(job.id)}">Erstabgleich</button>` : ""}
         <button type="button" data-act="toggle" data-id="${esc(job.id)}">${job.enabled ? "Zeitplan aus" : "Zeitplan an"}</button>
       </div>
+      <div class="row">
+        <button type="button" data-act="copy-script" data-id="${esc(job.id)}">Skript kopieren</button>
+        <button type="button" data-act="download-script" data-id="${esc(job.id)}">Skript herunterladen</button>
+      </div>
+      <p class="hint">Für User Scripts. Das Skript startet denselben Abgleich mit rclone und der Datei auf dem Unraid-Stick.</p>
     </article>`;
   }).join("");
   appEl.innerHTML = `${banners()}
@@ -742,8 +728,21 @@ async function onClick(event) {
       }
       return;
     }
-    if (act === "open-script") {
-      go(`#/script/${encodeURIComponent(id)}`);
+    if (act === "copy-script" || act === "download-script") {
+      const data = await api(`/api/jobs/${encodeURIComponent(id)}/script`);
+      if (act === "download-script") {
+        downloadText(data.filename || "sync.sh", data.script);
+        showNote("Skript heruntergeladen.");
+        return;
+      }
+      if (await copyText(data.script)) {
+        showNote("Skript kopiert. In User Scripts einfügen.");
+        return;
+      }
+      openModal(`<h2 id="modal-title">Sync-Skript</h2><p class="hint">Das Skript ist markiert. Mit Strg+C kopieren und in User Scripts einfügen.</p><textarea class="script-copy" id="script-copy" readonly>${esc(data.script)}</textarea><div class="row"><button type="button" data-act="close-modal">Schliessen</button></div>`);
+      const area = document.getElementById("script-copy");
+      area.focus();
+      area.select();
       return;
     }
     if (act === "reset-env") {
@@ -767,26 +766,6 @@ async function onSubmit(event) {
     try {
       await api("/api/remote/mkdir", { method: "POST", body: JSON.stringify({ path }) });
       await showBrowse(path);
-    } catch (error) {
-      showError(error.message);
-    }
-    return;
-  }
-  if (form.id === "script-form") {
-    event.preventDefault();
-    const route = parseRoute();
-    try {
-      await api(`/api/scripts/${encodeURIComponent(route.id)}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          script: form.script.value,
-          enabled: form.enabled.checked,
-          frequency: form.frequency.value,
-          custom: form.custom.value,
-        }),
-      });
-      showError("");
-      go("#/scripts");
     } catch (error) {
       showError(error.message);
     }
@@ -856,10 +835,6 @@ function onInput(event) {
     syncVisibility();
     schedulePreview();
   }
-  if (event.target.closest("#script-form") && event.target.name === "frequency") {
-    const custom = document.querySelector("[data-custom]");
-    if (custom) custom.hidden = event.target.value !== "custom";
-  }
   if (event.target.name === "webdav_url") {
     const url = document.getElementById("kdrive-url");
     if (!url) return;
@@ -890,7 +865,7 @@ window.addEventListener("hashchange", () => { showError(""); paint(); });
 reload().then(paint).catch((error) => showError(error.message));
 setInterval(async () => {
   const route = parseRoute().name;
-  if (route === "edit" || route === "connection" || route === "log" || route === "scripts" || route === "script") return;
+  if (route === "edit" || route === "connection" || route === "log") return;
   try {
     await reload();
     paint();

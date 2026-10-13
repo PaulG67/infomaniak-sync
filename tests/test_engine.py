@@ -15,6 +15,7 @@ from app.engine import (
     parse_rclone_remotes,
     plan_summary,
     read_rclone_section,
+    host_sync_script,
     prepare_job,
     render_filters,
     render_rclone_conf,
@@ -401,18 +402,42 @@ def test_dry_run_upload_leaves_kdrive_only_files():
     assert rows[0]["kind"] == "keep"
 
 
-def test_oc_nodes_are_excluded_and_hidden_from_the_plan(tmp_path):
+def test_oc_nodes_stay_in_sync_and_are_hidden_from_the_plan(tmp_path):
     job = blank_job()
     job["exclude_system"] = False
     text = render_filters(job)
-    assert "- **/.oc-nodes/**" in text
+    assert ".oc-nodes" not in text
     assert "- **/@eaDir/**" not in text
     log = """
 # PLAN {"local":"Daten","remote":"Cloud","dir":"both","version":false}
 INFO  : - Path2    File is new                         - .oc-nodes/abc
+INFO  : - Path2    File is new                         - fotos/.oc-nodes/meta
 INFO  : - Path1    File is new                         - fotos/bild.jpg
+INFO  : - Path2    File is new                         - OpenCloud_Daten/Paul.docx
 """
     rows, total = parse_dry_run(log)
-    assert total == 1
-    assert rows[0]["local"].endswith("fotos/bild.jpg")
-    assert all(".oc-nodes" not in (row["local"] + row["remote"]) for row in rows)
+    names = [row["local"] + row["remote"] for row in rows]
+    assert total == 2
+    assert any(name.endswith("fotos/bild.jpg") for name in names)
+    assert any(name.endswith("OpenCloud_Daten/Paul.docx") for name in names)
+    assert all(".oc-nodes" not in name for name in names)
+
+
+def test_host_script_uses_unraid_paths(tmp_path):
+    root = shares(tmp_path)
+    job = prepare_job(payload(), old=None, shares_root=root, now=NOW, tz=TZ)
+    filename, script = host_sync_script(
+        job,
+        shares_root=root,
+        config_dir=tmp_path / "config",
+        remote_name="Infomaniak",
+    )
+    assert filename.endswith(".sh")
+    assert script.startswith("#!/bin/bash\n")
+    assert "SHARES=/mnt/user" in script
+    assert "/boot/config/plugins/rclone/.rclone.conf" in script
+    assert '"${SHARES}/photos"' in script
+    assert "Infomaniak:Fotos" in script
+    assert '"$RCLONE_CONFIG"' in script
+    assert "--dry-run" not in script
+    assert ".oc-nodes" not in script

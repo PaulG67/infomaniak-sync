@@ -19,7 +19,6 @@ from app.runner import Runner, directory_names, probe
 from app.version import APP_VERSION
 from app.scheduler import start_scheduler
 from app.store import Store
-from app.userscripts import UserScripts
 
 log = logging.getLogger("app")
 
@@ -126,10 +125,6 @@ def create_app() -> Flask:
         env_warning = str(exc)
         log.warning("Container-Parameter ignoriert: %s", exc)
     store.interrupt_stale_runs()
-    scripts = UserScripts(
-        Path(os.environ.get("USER_SCRIPTS_DIR", "/user-scripts")),
-        Path(os.environ.get("USER_SCRIPTS_LIVE", "/user-scripts-live")),
-    )
     runner = Runner(store, shares_root, tz)
     if os.environ.get("SYNC_SCHEDULER", "1") != "0":
         start_scheduler(runner)
@@ -152,7 +147,6 @@ def create_app() -> Flask:
             pass
     app.secret_key = secret_path.read_bytes()
     app.config["STORE"] = store
-    app.config["SCRIPTS"] = scripts
     app.config["SHARES"] = shares_root
     app.config["TZ"] = tz
     app.config["TZ_NAME"] = str(tz)
@@ -240,7 +234,6 @@ def create_app() -> Flask:
             "runs": public_runs(),
             "active": runner.active(),
             "blank": engine.blank_job(),
-            "scripts_available": scripts.available(),
         }
 
     def payload() -> dict:
@@ -534,28 +527,33 @@ def create_app() -> Flask:
             }
         )
 
-    @app.get("/api/scripts")
-    def api_scripts():
-        return jsonify({"ok": True, "available": scripts.available(), "scripts": scripts.list_scripts()})
-
-    @app.get("/api/scripts/<script_id>")
-    def api_script(script_id: str):
-        try:
-            return jsonify({"ok": True, "script": scripts.get_script(script_id)})
-        except ValueError as exc:
-            return jsonify({"ok": False, "error": str(exc)}), 404
-
-    @app.put("/api/scripts/<script_id>")
-    def api_script_save(script_id: str):
-        data = payload()
-        saved = scripts.save_script(
-            script_id,
-            str(data.get("script") or ""),
-            enabled=engine.as_bool(data.get("enabled"), True),
-            frequency=str(data.get("frequency") or ""),
-            custom=str(data.get("custom") or ""),
+    @app.get("/api/jobs/<job_id>/script")
+    def api_job_script(job_id: str):
+        job = require_job(job_id)
+        backend = store.backend()
+        if backend.get("mode") == "rclone" and backend.get("remote"):
+            remote = backend["remote"]
+        else:
+            remote = (
+                store.get("rclone_remote", "")
+                or os.environ.get("RCLONE_REMOTE", "")
+                or engine.RCLONE_EXAMPLE_REMOTE
+            ).strip()
+        extra = []
+        nested = engine.config_exclude(store.config_dir, shares_root)
+        if nested:
+            extra.append(nested)
+        filename, script = engine.host_sync_script(
+            job,
+            shares_root=shares_root,
+            config_dir=store.config_dir,
+            remote_name=remote,
+            extra_excludes=extra,
+            host_shares=os.environ.get("HOST_SHARES_ROOT", engine.HOST_SHARES),
+            host_config=os.environ.get("HOST_CONFIG_DIR", engine.HOST_CONFIG),
+            host_rclone_config=os.environ.get("HOST_RCLONE_CONFIG", engine.HOST_RCLONE_CONFIG),
         )
-        return jsonify({"ok": True, "script": saved})
+        return jsonify({"ok": True, "filename": filename, "script": script})
 
     @app.errorhandler(ValueError)
     def value_error(exc: ValueError):

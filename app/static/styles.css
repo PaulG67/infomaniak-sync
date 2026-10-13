@@ -85,6 +85,7 @@ button.ghost { background: transparent; }
   color: var(--danger);
 }
 .flash.hidden { display: none; }
+.flash.ok { background: #e7f6ee; color: var(--ok); }
 .banner.warn { background: var(--warn-bg); color: #5c4308; }
 .banner.info { background: #e7f3f7; color: #0f3d56; }
 .form { display: grid; gap: .75rem; }
@@ -121,7 +122,7 @@ input, select, textarea {
   border-radius: 10px;
   background: #fff;
 }
-textarea.script-editor { min-height: 18rem; font-family: ui-monospace, Consolas, monospace; font-size: .82rem; }
+textarea.script-copy { min-height: 16rem; font-family: ui-monospace, Consolas, monospace; font-size: .82rem; }
 .editor { display: grid; gap: 1rem; }
 .mapping {
   display: grid;

@@ -20,14 +20,10 @@ def test_unraid_template_has_required_fields():
     remote = next(node for node in tree.findall("Config") if node.attrib.get("Name") == "rclone-Remote")
     assert remote.attrib.get("Target") == "RCLONE_REMOTE"
     assert remote.text == "Infomaniak"
-    scripts = next(node for node in tree.findall("Config") if node.attrib.get("Name") == "User Scripts")
-    assert scripts.attrib.get("Target") == "/user-scripts"
-    assert scripts.text == "/boot/config/plugins/user.scripts"
-    live = next(node for node in tree.findall("Config") if node.attrib.get("Name") == "User Scripts Laufzeit")
-    assert live.attrib.get("Target") == "/user-scripts-live"
+    assert "User Scripts" not in names
     password = next(node for node in tree.findall("Config") if node.attrib.get("Name") == "kDrive-Passwort")
     assert password.attrib.get("Mask") == "true"
     script = (ROOT / "unraid" / "install-template.sh").read_text(encoding="utf-8")
     assert "my-infomaniak-sync.xml" in script
     assert "set -euo pipefail" in script
-    assert "User Scripts" in script
+    assert "User Scripts" not in script
