@@ -30,7 +30,8 @@ def test_parse_samba_mount_cfg():
     assert first["mountpoint"] == "/mnt/remotes/synology_backup"
     assert first["host"] == "synology"
     assert first["share"] == "backup"
-    assert remotes[1]["id"] == "media"
+    assert remotes[1]["id"] == "nas_media"
+    assert remotes[1]["mountpoint"] == "/mnt/remotes/nas_media"
 
 
 def test_parse_unraid_style_ip_share_names():
@@ -65,8 +66,12 @@ def test_list_synology_shares_marks_mount_and_selection(tmp_path):
     (remotes / "media").mkdir()
     data = list_synology_shares(ud_config_dir=ud, remotes_root=remotes, selected_id="synology_backup")
     assert data["ud_present"] is True
+    assert data["ud_cfg_present"] is True
+    assert data["remotes_ok"] is True
     by_id = {item["id"]: item for item in data["shares"]}
     assert by_id["synology_backup"]["selected"] is True
     assert by_id["synology_backup"]["source"] == "//synology/backup"
     assert by_id["synology_backup"]["mountpoint"] == "/mnt/remotes/synology_backup"
+    assert by_id["nas_media"]["from_config"] is True
+    assert by_id["media"]["from_config"] is False
     assert resolve_synology_root(remotes, "synology_backup") == mounted.resolve()
