@@ -107,8 +107,8 @@ def share_count(root: Path) -> int:
 def create_app() -> Flask:
     config_dir = Path(os.environ.get("CONFIG_DIR", "/config"))
     shares_root = Path(os.environ.get("SHARES_ROOT", "/shares"))
-    remotes_root = Path(os.environ.get("SYNOLOGY_ROOT", "/synology"))
-    ud_config_dir = Path(os.environ.get("UD_CONFIG_DIR", "/unassigned-devices"))
+    remotes_root = Path(os.environ.get("SYNOLOGY_ROOT") or "/synology")
+    ud_config_dir = Path(os.environ.get("UD_CONFIG_DIR") or "/unassigned-devices")
     tz = load_tz(os.environ.get("TZ", "Europe/Zurich"))
     web_password = os.environ.get("WEB_PASSWORD") or ""
     web_user = os.environ.get("WEB_USER") or "admin"

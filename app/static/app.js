@@ -479,6 +479,8 @@ function renderSettings() {
       <span class="meta">${item.mounted ? "eingehängt" : "ausgehängt"}</span></td>
   </tr>`).join("");
   const remotesOk = synology.remotes_ok;
+  const containerRemotes = synology.remotes_root || "/synology";
+  const diag = `<p class="meta">Container prüft: <code>${esc(containerRemotes)}</code> · ${remotesOk ? "Ordner vorhanden" : "Ordner fehlt"} · ${synology.dir_count || 0} Unterordner${synology.list_error ? ` · Fehler: ${esc(synology.list_error)}` : ""}</p>`;
   const synBody = shares.length
     ? `<div class="plan-wrap"><table class="share-table">
         <thead><tr><th></th><th>Quelle</th><th>Mountpoint</th><th>Status</th></tr></thead>
@@ -486,16 +488,20 @@ function renderSettings() {
       </table></div>`
     : remotesOk
       ? `<div class="banner warn">
-          <p>Unter <code>/mnt/remotes</code> liegt noch kein Share. In Unraid unter <strong>Unassigned Devices → SMB Shares</strong> einen Remote einhängen, dann neu laden.</p>
+          <p>Der Path ist eingebunden, aber leer. Unter Unassigned Devices einen SMB-Share <strong>einhängen</strong>. Access Mode am Path Remotes auf <strong>Read/Write/Slave</strong> setzen, dann Apply.</p>
         </div>`
       : `<div class="banner warn">
-        <p><strong>Remotes fehlen.</strong> Ein einziger Path im Docker-Template:</p>
+        <p><strong>Im Container fehlt <code>${esc(containerRemotes)}</code>.</strong> Der Host-Pfad allein reicht nicht — prüfe die drei Felder:</p>
         <ol class="hint" style="margin:.4rem 0 0 1.1rem;padding:0">
-          <li>Docker → infomaniak-sync → <strong>Edit</strong></li>
-          <li>Path <strong>Remotes</strong>: Host-Pfad <code>/mnt/remotes</code></li>
-          <li><strong>Apply</strong>, dann diese Seite neu laden</li>
+          <li><strong>Name:</strong> Remotes</li>
+          <li><strong>Container-Pfad:</strong> <code>/synology</code> (genau so, nicht /mnt/remotes)</li>
+          <li><strong>Host-Pfad:</strong> <code>/mnt/remotes</code></li>
+          <li>Access Mode: <strong>Read/Write/Slave</strong></li>
+          <li><strong>Apply</strong>, Seite neu laden</li>
         </ol>
-        <p class="hint" style="margin-top:.5rem">Force Update allein hängt den Path nicht an.</p>
+        <p class="hint" style="margin-top:.5rem">Kontrolle im Unraid-Terminal:<br>
+        <code>docker exec infomaniak-sync ls -la /synology</code><br>
+        <code>docker inspect infomaniak-sync --format '{{range .Mounts}}{{.Source}} -&gt; {{.Destination}}{{println}}{{end}}'</code></p>
       </div>`;
   appEl.innerHTML = `${banners()}
     <div class="settings-stack">
@@ -534,6 +540,7 @@ function renderSettings() {
       <form id="synology-form" class="card form">
         <h2>SMB Shares</h2>
         <p class="hint">Dieselbe Liste wie unter Unassigned Devices. Einen Share als Backup-Ziel wählen.</p>
+        ${diag}
         ${synBody}
         <div class="row" style="margin-top:.75rem">
           <button type="submit" class="primary" ${shares.length ? "" : "disabled"}>Share speichern</button>
