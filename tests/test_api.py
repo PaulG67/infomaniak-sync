@@ -29,18 +29,18 @@ def test_health_and_create_job(env):
     client = create_app().test_client()
     health = client.get("/health")
     assert health.status_code == 200
-    assert health.get_json()["version"] == "1.2.6"
+    assert health.get_json()["version"] == "1.2.7"
     page = client.get("/")
     html = page.get_data(as_text=True)
-    assert "Version 1.2.6" in html
-    assert "app.js?v=1.2.6" in html
+    assert "Version 1.2.7" in html
+    assert "app.js?v=1.2.7" in html
     assert "Einstellungen" in html
     assert 'data-tab="settings"' in html
     assert 'data-tab="connection"' not in html
     assert page.headers["Cache-Control"] == "no-store"
     state = client.get("/api/state").get_json()
     assert state["share_count"] == 2
-    assert state["app_version"] == "1.2.6"
+    assert state["app_version"] == "1.2.7"
     assert "synology_ok" in state
     assert "synology" in state
     assert "shares" in state["synology"]

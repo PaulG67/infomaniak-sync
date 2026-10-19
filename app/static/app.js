@@ -186,16 +186,21 @@ function renderList() {
   const cards = state.jobs.map((job) => {
     const active = isActive(job.id);
     const status = active ? "running" : (job.last_status || "");
-    const targets = [
-      job.kdrive_enabled !== false ? "Infomaniak" : null,
-      job.synology_enabled ? (job.synology_share ? `SMB:${job.synology_share}` : "SMB") : null,
-    ].filter(Boolean).join(" + ") || "kein Ziel";
+    const sources = job.mappings.map((item) => item.local || "/").join(", ");
+    const kdriveChip = job.kdrive_enabled !== false
+      ? `<span class="target-chip on">Infomaniak</span>`
+      : `<span class="target-chip off">Infomaniak aus</span>`;
+    const smbLabel = job.synology_share ? `SMB · ${job.synology_share}` : "SMB";
+    const smbChip = job.synology_enabled
+      ? `<span class="target-chip on">${esc(smbLabel)}</span>`
+      : `<span class="target-chip off">SMB aus</span>`;
     const pairs = job.mappings.map((item) => {
       const ends = [];
       if (job.kdrive_enabled !== false) ends.push(`kDrive:${item.remote || "/"}`);
       if (job.synology_enabled) {
         const share = job.synology_share || "?";
-        ends.push(`SMB:${share}/${item.synology || ""}`.replace(/\/$/, "") || `SMB:${share}`);
+        const sub = (item.synology || "").replace(/^\/+|\/+$/g, "");
+        ends.push(sub ? `SMB:${share}/${sub}` : `SMB:${share}`);
       }
       return `${item.local || "/"} → ${ends.join(" · ") || "—"}`;
     }).join(", ");
@@ -204,7 +209,8 @@ function renderList() {
         <h2>${esc(job.name)}</h2>
         <span class="pill ${esc(status)}">${esc(status ? STATUS[status] || status : "bereit")}</span>
       </div>
-      <p class="meta">${esc(MODE[job.mode] || job.mode)} · ${esc(targets)} · ${esc(job.schedule_label)} · ${job.enabled ? "aktiv" : "pausiert"}<br>${esc(pairs)}</p>
+      <div class="target-chips">${kdriveChip}${smbChip}</div>
+      <p class="meta">${esc(MODE[job.mode] || job.mode)} · Quelle: ${esc(sources || "—")} · ${esc(job.schedule_label)} · ${job.enabled ? "aktiv" : "pausiert"}<br>${esc(pairs)}</p>
       <p class="meta">Nächster Lauf: ${esc(job.next_run ? fmtTime(job.next_run) : "—")}${job.schedule_block ? ` · ${esc(job.schedule_block)}` : ""}</p>
       ${job.last_summary ? `<p class="meta">${esc(job.last_summary)}</p>` : ""}
       <div class="row">
@@ -228,7 +234,7 @@ function renderList() {
       <button type="button" class="primary" data-go="#/new">Auftrag anlegen</button>
       <button type="button" data-act="pause">${settings.schedules_paused ? "Zeitpläne fortsetzen" : "Alle Zeitpläne pausieren"}</button>
     </div>
-    <div class="stack">${cards || `<div class="card"><p>Noch kein Auftrag. Lege fest, welcher Share in welchen kDrive-Ordner soll.</p></div>`}</div>`;
+    <div class="stack">${cards || `<div class="card"><p>Noch kein Auftrag. Eine Unraid-Quelle, dann Infomaniak und/oder SMB als Ziel.</p></div>`}</div>`;
 }
 
 function fieldSelect(name, options, selected) {
@@ -244,31 +250,70 @@ function renderEdit(id) {
   }
   const job = existing ? structuredClone(existing) : structuredClone(state.blank);
   const schedule = job.schedule || state.blank.schedule;
-  const maps = (job.mappings.length ? job.mappings : [{ local: "", remote: "", synology: "" }]).map((item) => mappingRow(item)).join("");
+  const maps = job.mappings.length ? job.mappings : [{ local: "", remote: "", synology: "" }];
+  const shareOptions = (state.synology?.shares || []).map((item) =>
+    `<option value="${esc(item.id)}" ${item.id === (job.synology_share || "") ? "selected" : ""}>${esc(item.source || item.id)}${item.mounted ? "" : " (ausgehängt)"}</option>`
+  ).join("");
   appEl.innerHTML = `<form id="job-form" class="editor" data-id="${esc(id || "")}">
     <div class="stack">
       <section class="card form">
         <label>Name<input name="name" required maxlength="80" value="${esc(job.name)}" /></label>
         <label class="inline"><input type="checkbox" name="enabled" ${job.enabled ? "checked" : ""} /> Zeitplan für diesen Auftrag aktiv</label>
-        <label class="inline check"><input type="checkbox" name="kdrive_enabled" ${job.kdrive_enabled !== false ? "checked" : ""} /> Infomaniak kDrive in diesem Auftrag</label>
-        <label class="inline check"><input type="checkbox" name="synology_enabled" ${job.synology_enabled ? "checked" : ""} /> SMB-Backup (Unassigned Devices) in diesem Auftrag</label>
-        <p class="hint">Mindestens ein Ziel muss aktiv sein. SMB nutzt den Path Remotes${state.synology_ok ? "" : " (noch nicht eingebunden — Host-Pfad /mnt/remotes)"}.</p>
-        <div id="synology-share-field" data-target="synology">
-          <label>SMB-Share<select name="synology_share">
-            <option value="">Share wählen</option>
-            ${(state.synology?.shares || []).map((item) =>
-              `<option value="${esc(item.id)}" ${item.id === (job.synology_share || "") ? "selected" : ""}>${esc(item.source || item.id)}${item.mounted ? "" : " (ausgehängt)"}</option>`
-            ).join("")}
-          </select></label>
-          <p class="hint">Pro Auftrag ein eigener Share. Quelle wie unter Unassigned Devices.</p>
+      </section>
+      <section class="card form source-panel">
+        <div class="split">
+          <div>
+            <h2 class="panel-title">Quelle</h2>
+            <p class="hint">Dieselbe Unraid-Quelle gilt für beide Ziele.</p>
+          </div>
+          <button type="button" data-act="add-map">Quelle hinzufügen</button>
         </div>
-        <div class="split"><strong>Ordner</strong><button type="button" data-act="add-map">Ordnerpaar hinzufügen</button></div>
-        <p class="hint">Ein Share ist ein Ordner direkt unter dem gemounteten Pfad. Unterordner trägst du als share/unterordner ein. Zielordner auf kDrive und SMB dürfen anders heissen oder tiefer liegen.</p>
-        <div id="maps">${maps}</div>
+        <div id="sources">${maps.map((item, index) => sourceRow(item, index)).join("")}</div>
         <div id="confirm-root-field">
           <label class="inline check"><input type="checkbox" name="confirm_root" ${job.confirm_root ? "checked" : ""} /> Gesamten gemounteten Inhalt synchronisieren</label>
         </div>
       </section>
+      <div class="target-grid">
+        <section class="card form target-card" data-target="kdrive" id="target-kdrive">
+          <div class="target-head">
+            <div>
+              <h2 class="panel-title">Infomaniak</h2>
+              <p class="hint">kDrive über WebDAV</p>
+            </div>
+            <label class="switch">
+              <input type="checkbox" name="kdrive_enabled" ${job.kdrive_enabled !== false ? "checked" : ""} />
+              <span class="switch-ui"></span>
+              <span class="switch-label">Aktiv</span>
+            </label>
+          </div>
+          <div class="target-body" data-target-body="kdrive">
+            <div id="kdrive-dests">${maps.map((item, index) => kdriveDestRow(item, index)).join("")}</div>
+            <p class="hint">Zielordner darf anders heissen als die Quelle.</p>
+          </div>
+        </section>
+        <section class="card form target-card" data-target="synology" id="target-synology">
+          <div class="target-head">
+            <div>
+              <h2 class="panel-title">SMB</h2>
+              <p class="hint">Unassigned Devices / Synology</p>
+            </div>
+            <label class="switch">
+              <input type="checkbox" name="synology_enabled" ${job.synology_enabled ? "checked" : ""} />
+              <span class="switch-ui"></span>
+              <span class="switch-label">Aktiv</span>
+            </label>
+          </div>
+          <div class="target-body" data-target-body="synology">
+            <label>SMB-Share<select name="synology_share">
+              <option value="">Share wählen</option>
+              ${shareOptions}
+            </select></label>
+            <div id="smb-dests">${maps.map((item, index) => smbDestRow(item, index)).join("")}</div>
+            <p class="hint">${state.synology_ok ? "Share zuerst wählen, dann Ordner." : "Path Remotes fehlt noch (Host /mnt/remotes, Slave)."}</p>
+          </div>
+        </section>
+      </div>
+      <p class="hint target-note">Mindestens ein Ziel muss aktiv sein. Quelle und Ziele werden beim Speichern verknüpft.</p>
       <section class="card form">
         <label>Art${fieldSelect("mode", Object.entries(MODE), job.mode)}</label>
         <div id="existing-field"><label>Vorhandene Dateien${fieldSelect("existing", [
@@ -350,20 +395,58 @@ function renderEdit(id) {
   schedulePreview();
 }
 
-function mappingRow(item) {
-  return `<div class="mapping">
-    <label>Unraid<input name="local" value="${esc(item.local || "")}" spellcheck="false" placeholder="photos oder photos/2024" /></label>
-    <label data-target="kdrive">kDrive<input name="remote" value="${esc(item.remote || "")}" spellcheck="false" placeholder="Fotos oder Archiv/Fotos" /></label>
-    <label data-target="synology">SMB<input name="synology" value="${esc(item.synology || "")}" spellcheck="false" placeholder="Backup/Fotos" /></label>
+function sourceLabel(local) {
+  const value = (local || "").trim();
+  return value || "Quelle";
+}
+
+function sourceRow(item, index) {
+  return `<div class="source-row" data-map-index="${index}">
+    <label>Unraid-Ordner<input name="local" value="${esc(item.local || "")}" spellcheck="false" placeholder="photos oder photos/2024" data-sync-source /></label>
     <div class="row map-actions">
       <button type="button" data-act="browse" data-field="local">Unraid wählen</button>
-      <button type="button" data-act="browse" data-field="remote" data-target="kdrive">kDrive wählen</button>
-      <button type="button" data-act="browse" data-field="synology" data-target="synology">SMB wählen</button>
-      <button type="button" data-act="same-path">Gleicher Pfad</button>
-      <button type="button" data-act="base-name">Nur Ordnername</button>
+      <button type="button" data-act="same-path">Gleicher Pfad in beide Ziele</button>
+      <button type="button" data-act="base-name">Nur Ordnername in beide Ziele</button>
       <button type="button" data-act="remove-map">Entfernen</button>
     </div>
   </div>`;
+}
+
+function kdriveDestRow(item, index) {
+  return `<div class="dest-row" data-map-index="${index}">
+    <div class="dest-from"><span class="dest-tag">von</span> <strong class="source-ref">${esc(sourceLabel(item.local))}</strong></div>
+    <label>kDrive-Ordner<input name="remote" value="${esc(item.remote || "")}" spellcheck="false" placeholder="Fotos oder Archiv/Fotos" /></label>
+    <button type="button" data-act="browse" data-field="remote">kDrive wählen</button>
+  </div>`;
+}
+
+function smbDestRow(item, index) {
+  return `<div class="dest-row" data-map-index="${index}">
+    <div class="dest-from"><span class="dest-tag">von</span> <strong class="source-ref">${esc(sourceLabel(item.local))}</strong></div>
+    <label>SMB-Ordner<input name="synology" value="${esc(item.synology || "")}" spellcheck="false" placeholder="Backup/Fotos" /></label>
+    <button type="button" data-act="browse" data-field="synology">SMB wählen</button>
+  </div>`;
+}
+
+function reindexMaps() {
+  const form = document.getElementById("job-form");
+  if (!form) return;
+  [...form.querySelectorAll(".source-row")].forEach((row, index) => { row.dataset.mapIndex = String(index); });
+  [...form.querySelectorAll("#kdrive-dests .dest-row")].forEach((row, index) => { row.dataset.mapIndex = String(index); });
+  [...form.querySelectorAll("#smb-dests .dest-row")].forEach((row, index) => { row.dataset.mapIndex = String(index); });
+  syncSourceLabels();
+}
+
+function syncSourceLabels() {
+  const form = document.getElementById("job-form");
+  if (!form) return;
+  const locals = [...form.querySelectorAll(".source-row [name=local]")];
+  locals.forEach((input, index) => {
+    const label = sourceLabel(input.value);
+    form.querySelectorAll(`.dest-row[data-map-index="${index}"] .source-ref`).forEach((el) => {
+      el.textContent = label;
+    });
+  });
 }
 
 function syncVisibility() {
@@ -389,12 +472,15 @@ function syncVisibility() {
   document.getElementById("weekday-field").hidden = kind !== "weekly";
   document.getElementById("interval-field").hidden = kind !== "interval";
   document.getElementById("cron-field").hidden = kind !== "cron";
-  const root = [...form.querySelectorAll("[name=local]")].some((input) => input.value.trim() === "");
+  const root = [...form.querySelectorAll(".source-row [name=local]")].some((input) => input.value.trim() === "");
   document.getElementById("confirm-root-field").hidden = !root;
   const kdriveOn = field("kdrive_enabled").checked;
   const synOn = field("synology_enabled").checked;
-  form.querySelectorAll("[data-target=kdrive]").forEach((el) => { el.hidden = !kdriveOn; });
-  form.querySelectorAll("[data-target=synology]").forEach((el) => { el.hidden = !synOn; });
+  form.querySelector("#target-kdrive")?.classList.toggle("is-off", !kdriveOn);
+  form.querySelector("#target-synology")?.classList.toggle("is-off", !synOn);
+  form.querySelectorAll("[data-target-body=kdrive]").forEach((el) => { el.hidden = !kdriveOn; });
+  form.querySelectorAll("[data-target-body=synology]").forEach((el) => { el.hidden = !synOn; });
+  syncSourceLabels();
 }
 
 function readJob() {
@@ -403,16 +489,19 @@ function readJob() {
   const mode = field("mode").value;
   const keepVersion = field("keep_version").checked;
   const id = form.dataset.id;
+  const locals = [...form.querySelectorAll(".source-row [name=local]")];
+  const remotes = [...form.querySelectorAll("#kdrive-dests [name=remote]")];
+  const syns = [...form.querySelectorAll("#smb-dests [name=synology]")];
   const job = {
     name: field("name").value.trim(),
     enabled: field("enabled").checked,
     kdrive_enabled: field("kdrive_enabled").checked,
     synology_enabled: field("synology_enabled").checked,
     synology_share: field("synology_share")?.value || "",
-    mappings: [...form.querySelectorAll(".mapping")].map((row) => ({
-      local: row.querySelector("[name=local]").value.trim(),
-      remote: row.querySelector("[name=remote]").value.trim(),
-      synology: row.querySelector("[name=synology]").value.trim(),
+    mappings: locals.map((input, index) => ({
+      local: input.value.trim(),
+      remote: remotes[index]?.value.trim() || "",
+      synology: syns[index]?.value.trim() || "",
     })),
     mode,
     existing: mode === "bisync" ? (keepVersion ? "version" : "overwrite") : field("existing").value,
@@ -764,37 +853,60 @@ async function onClick(event) {
       return;
     }
     if (act === "add-map") {
-      document.getElementById("maps").insertAdjacentHTML("beforeend", mappingRow({ local: "", remote: "", synology: "" }));
+      const index = document.querySelectorAll(".source-row").length;
+      const blank = { local: "", remote: "", synology: "" };
+      document.getElementById("sources").insertAdjacentHTML("beforeend", sourceRow(blank, index));
+      document.getElementById("kdrive-dests").insertAdjacentHTML("beforeend", kdriveDestRow(blank, index));
+      document.getElementById("smb-dests").insertAdjacentHTML("beforeend", smbDestRow(blank, index));
       dirty = true;
       syncVisibility();
+      schedulePreview();
       return;
     }
     if (act === "remove-map") {
-      const row = actEl.closest(".mapping");
-      if (document.querySelectorAll(".mapping").length === 1) {
-        row.querySelector("[name=local]").value = "";
-        row.querySelector("[name=remote]").value = "";
-        row.querySelector("[name=synology]").value = "";
-      } else row.remove();
+      const row = actEl.closest(".source-row, .dest-row");
+      const index = Number(row?.dataset.mapIndex ?? -1);
+      const sources = document.querySelectorAll(".source-row");
+      if (index < 0) return;
+      if (sources.length === 1) {
+        document.querySelector(`.source-row[data-map-index="${index}"] [name=local]`).value = "";
+        document.querySelector(`#kdrive-dests .dest-row[data-map-index="${index}"] [name=remote]`).value = "";
+        document.querySelector(`#smb-dests .dest-row[data-map-index="${index}"] [name=synology]`).value = "";
+      } else {
+        document.querySelector(`.source-row[data-map-index="${index}"]`)?.remove();
+        document.querySelector(`#kdrive-dests .dest-row[data-map-index="${index}"]`)?.remove();
+        document.querySelector(`#smb-dests .dest-row[data-map-index="${index}"]`)?.remove();
+        reindexMaps();
+      }
       dirty = true;
       syncVisibility();
       schedulePreview();
       return;
     }
     if (act === "same-path" || act === "base-name") {
-      const row = actEl.closest(".mapping");
+      const row = actEl.closest(".source-row");
+      const index = Number(row?.dataset.mapIndex ?? -1);
+      if (index < 0) return;
       const local = row.querySelector("[name=local]").value.trim();
       const value = act === "same-path" ? local : (local.split("/").filter(Boolean).pop() || local);
-      row.querySelector("[name=remote]").value = value;
-      row.querySelector("[name=synology]").value = value;
+      const remote = document.querySelector(`#kdrive-dests .dest-row[data-map-index="${index}"] [name=remote]`);
+      const syn = document.querySelector(`#smb-dests .dest-row[data-map-index="${index}"] [name=synology]`);
+      if (remote) remote.value = value;
+      if (syn) syn.value = value;
       dirty = true;
       schedulePreview();
       return;
     }
     if (act === "browse") {
-      browse = { field: actEl.dataset.field, row: actEl.closest(".mapping"), path: "" };
-      const current = browse.row.querySelector(`[name=${browse.field}]`).value.trim();
-      await showBrowse(current);
+      const host = actEl.closest(".source-row, .dest-row");
+      const index = Number(host?.dataset.mapIndex ?? -1);
+      const fieldName = actEl.dataset.field;
+      let input = null;
+      if (fieldName === "local") input = host?.querySelector("[name=local]");
+      if (fieldName === "remote") input = document.querySelector(`#kdrive-dests .dest-row[data-map-index="${index}"] [name=remote]`);
+      if (fieldName === "synology") input = document.querySelector(`#smb-dests .dest-row[data-map-index="${index}"] [name=synology]`);
+      browse = { field: fieldName, input, path: "" };
+      await showBrowse((input?.value || "").trim());
       return;
     }
     if (act === "enter") {
@@ -802,8 +914,8 @@ async function onClick(event) {
       return;
     }
     if (act === "choose") {
-      if (browse?.row) {
-        browse.row.querySelector(`[name=${browse.field}]`).value = actEl.dataset.path || "";
+      if (browse?.input) {
+        browse.input.value = actEl.dataset.path || "";
         dirty = true;
         syncVisibility();
         schedulePreview();
