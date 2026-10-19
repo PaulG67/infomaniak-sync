@@ -117,11 +117,16 @@ def create_app() -> Flask:
     external_config = Path(os.environ.get("RCLONE_CONFIG_FILE", "/rclone/rclone.conf") or "/rclone/rclone.conf")
     store = Store(config_dir, external_config=external_config)
 
-    def synology_root() -> Path:
-        selected = store.get("synology_share", "")
-        if selected and remotes_root.is_dir():
+    def remotes_base() -> Path:
+        return remotes_root
+
+    def synology_for_job(job: dict | None = None, *, share: str = "") -> Path:
+        chosen = (share or (job or {}).get("synology_share") or store.get("synology_share", "")).strip()
+        if chosen and remotes_root.is_dir():
             try:
-                return remotes_mod.resolve_synology_root(remotes_root, selected)
+                target = remotes_mod.resolve_synology_root(remotes_root, chosen)
+                if target.is_dir():
+                    return target
             except ValueError:
                 pass
         return remotes_root
@@ -138,7 +143,7 @@ def create_app() -> Flask:
         env_warning = str(exc)
         log.warning("Container-Parameter ignoriert: %s", exc)
     store.interrupt_stale_runs()
-    runner = Runner(store, shares_root, tz, synology_root=remotes_root, synology_resolver=synology_root)
+    runner = Runner(store, shares_root, tz, synology_root=remotes_root)
     if os.environ.get("SYNC_SCHEDULER", "1") != "0":
         start_scheduler(runner)
 
@@ -275,9 +280,9 @@ def create_app() -> Flask:
             "shares_root": str(shares_root),
             "shares_ok": shares_root.is_dir(),
             "share_count": share_count(shares_root),
-            "synology_root": str(synology_root()),
+            "synology_root": str(remotes_base()),
             "synology_remotes_root": str(remotes_root),
-            "synology_ok": synology_root().is_dir(),
+            "synology_ok": remotes_root.is_dir(),
             "synology_example": engine.SYNOLOGY_EXAMPLE,
             "synology": synology,
             "app_version": APP_VERSION,
@@ -311,7 +316,8 @@ def create_app() -> Flask:
             raw,
             old=old,
             shares_root=shares_root,
-            synology_root=synology_root(),
+            remotes_root=remotes_root,
+            default_synology_share=store.get("synology_share", ""),
             now=now(),
             tz=tz,
         )
@@ -385,12 +391,15 @@ def create_app() -> Flask:
 
     @app.get("/api/synology")
     def api_synology():
-        root = synology_root()
+        share = str(request.args.get("share") or "").strip()
+        root = synology_for_job(share=share)
         if not root.is_dir():
             raise ValueError(
-                "SMB-Remotes fehlen. Unter Einstellungen einen Share wählen "
+                "SMB-Remotes fehlen. Im Auftrag einen Share wählen "
                 f"oder im Template den Path Remotes auf {engine.SYNOLOGY_EXAMPLE} setzen."
             )
+        if share and root == remotes_root:
+            raise ValueError(f"SMB-Share «{share}» fehlt oder ist nicht eingehängt")
         rel = engine.clean_rel(request.args.get("path", ""), label="SMB-Ordner")
         return jsonify(list_dirs(root, rel, label="SMB-Ordner"))
 
@@ -514,7 +523,8 @@ def create_app() -> Flask:
                 raw,
                 old=None,
                 shares_root=shares_root,
-                synology_root=synology_root(),
+                remotes_root=remotes_root,
+                default_synology_share=store.get("synology_share", ""),
                 now=now(),
                 tz=tz,
                 relax_confirm=True,
@@ -528,7 +538,8 @@ def create_app() -> Flask:
                     raw,
                     old=old,
                     shares_root=shares_root,
-                    synology_root=synology_root(),
+                    remotes_root=remotes_root,
+                    default_synology_share=store.get("synology_share", ""),
                     now=now(),
                     tz=tz,
                     relax_confirm=True,
@@ -555,7 +566,7 @@ def create_app() -> Flask:
             resync=engine.needs_resync(job),
             stamp="ZEITSTEMPEL",
             remote_name=remote_name,
-            synology_root=synology_root(),
+            synology_root=synology_for_job(job),
         )
         return jsonify(
             {
@@ -660,7 +671,7 @@ def create_app() -> Flask:
         if nested:
             extra.append(nested)
         host_syn = os.environ.get("HOST_SYNOLOGY_ROOT", engine.HOST_SYNOLOGY).rstrip("/")
-        selected = store.get("synology_share", "")
+        selected = (job.get("synology_share") or store.get("synology_share", "")).strip()
         if selected:
             host_syn = f"{host_syn}/{selected}"
         filename, script = engine.host_sync_script(
@@ -672,7 +683,7 @@ def create_app() -> Flask:
             host_shares=os.environ.get("HOST_SHARES_ROOT", engine.HOST_SHARES),
             host_config=os.environ.get("HOST_CONFIG_DIR", engine.HOST_CONFIG),
             host_rclone_config=os.environ.get("HOST_RCLONE_CONFIG", engine.HOST_RCLONE_CONFIG),
-            synology_root=synology_root(),
+            synology_root=synology_for_job(job),
             host_synology=host_syn,
         )
         return jsonify({"ok": True, "filename": filename, "script": script})

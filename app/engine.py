@@ -19,6 +19,8 @@ from zoneinfo import ZoneInfo
 
 from croniter import croniter
 
+from app.remotes import resolve_synology_root
+
 MODES = ("upload", "mirror_up", "download", "mirror_down", "bisync")
 EXISTING = ("overwrite", "newer", "skip", "version")
 CONFLICTS = ("newer", "larger", "local", "remote", "both")
@@ -86,6 +88,7 @@ def blank_job() -> dict:
         "enabled": True,
         "kdrive_enabled": True,
         "synology_enabled": False,
+        "synology_share": "",
         "mappings": [{"local": "", "remote": "", "synology": ""}],
         "mode": "upload",
         "existing": "newer",
@@ -490,6 +493,8 @@ def prepare_job(
     tz: ZoneInfo,
     relax_confirm: bool = False,
     synology_root: Path | None = None,
+    remotes_root: Path | None = None,
+    default_synology_share: str = "",
 ) -> dict:
     if not isinstance(raw, dict):
         raise ValueError("Ungültige Daten")
@@ -513,8 +518,27 @@ def prepare_job(
         raise ValueError("Synchronisationsart ungültig")
     if synology_enabled and mode == "bisync":
         raise ValueError("Beidseitiger Abgleich gilt nur für Infomaniak. SMB deaktivieren oder eine andere Art wählen.")
+    synology_share = str(
+        raw.get("synology_share")
+        if "synology_share" in raw
+        else (old or {}).get("synology_share") or default_synology_share or ""
+    ).strip()
     if synology_enabled:
-        if synology_root is None or not synology_root.is_dir():
+        if remotes_root is not None:
+            if not remotes_root.is_dir():
+                raise ValueError(
+                    f"SMB-Remotes fehlen. Im Template den Path Remotes auf {SYNOLOGY_EXAMPLE} setzen "
+                    "und Edit → Apply."
+                )
+            if not synology_share:
+                raise ValueError("SMB-Share für diesen Auftrag wählen")
+            synology_root = resolve_synology_root(remotes_root, synology_share)
+            if not synology_root.is_dir():
+                raise ValueError(
+                    f"SMB-Share «{synology_share}» fehlt oder ist nicht eingehängt. "
+                    "Unter Unassigned Devices einhängen."
+                )
+        elif synology_root is None or not Path(synology_root).is_dir():
             raise ValueError(
                 f"SMB-Remotes fehlen. Im Template den Path Remotes auf {SYNOLOGY_EXAMPLE} setzen "
                 "und Edit → Apply."
@@ -605,6 +629,7 @@ def prepare_job(
         "enabled": as_bool(raw.get("enabled"), True),
         "kdrive_enabled": kdrive_enabled,
         "synology_enabled": synology_enabled,
+        "synology_share": synology_share if synology_enabled else "",
         "mappings": mappings,
         "mode": mode,
         "existing": existing,
@@ -674,7 +699,8 @@ def describe(job: dict) -> str:
     if job.get("kdrive_enabled", True):
         targets.append("Infomaniak")
     if job.get("synology_enabled"):
-        targets.append("SMB")
+        share = (job.get("synology_share") or "").strip()
+        targets.append(f"SMB:{share}" if share else "SMB")
     pairs = []
     for mapping in job.get("mappings") or []:
         local = mapping.get("local") or ""
@@ -683,7 +709,14 @@ def describe(job: dict) -> str:
         if job.get("kdrive_enabled", True):
             ends.append("kDrive:" + (mapping.get("remote") or "/"))
         if job.get("synology_enabled"):
-            ends.append("SMB:" + (mapping.get("synology") or "/"))
+            share = (job.get("synology_share") or "").strip()
+            sub = (mapping.get("synology") or "").strip("/")
+            if share and sub:
+                ends.append(f"SMB:{share}/{sub}")
+            elif share:
+                ends.append(f"SMB:{share}")
+            else:
+                ends.append(f"SMB:{sub or '/'}")
         pairs.append(f"{src} → {' und '.join(ends)}")
     mode = str(job.get("mode") or "upload")
     parts = [MODE_TEXT.get(mode, mode)]

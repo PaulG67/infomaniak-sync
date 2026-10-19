@@ -50,7 +50,7 @@ Dann **Docker → infomaniak-sync → Force Update**. Neue Template-Felder zusä
 
 Angleichen löscht Dateien auf der Zielseite. Die Oberfläche verlangt dafür eine Bestätigung. Der beidseitige Zeitplan startet erst nach einem manuellen Erstabgleich. Dabei landen überschriebene Fassungen im Versionsordner.
 
-Für SMB-Backup im Unraid-Template den Path **Remotes** auf Host `/mnt/remotes` setzen (wie Unassigned Devices). Unter **Einstellungen** den Share wählen. Nach Force Update einmal **Edit → Apply**.
+Für SMB-Backup im Unraid-Template den Path **Remotes** auf Host `/mnt/remotes` setzen (Access Mode Read/Write/Slave). Pro Auftrag unter SMB-Backup den Share wählen. Nach Force Update einmal **Edit → Apply**.
 
 Ordner namens `.oc-nodes` und die Dateien darin (OpenCloud-Metadaten) bleiben in der Probelauf-Tabelle ausgeblendet. Synchronisiert werden sie weiterhin.
 

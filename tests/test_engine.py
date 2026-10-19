@@ -261,20 +261,23 @@ def test_dry_run_uses_debug_json_log(tmp_path):
 
 def test_synology_and_kdrive_in_one_job(tmp_path):
     root = shares(tmp_path)
-    syn = tmp_path / "synology"
-    syn.mkdir()
+    remotes = tmp_path / "remotes"
+    syn = remotes / "nas_backup"
+    syn.mkdir(parents=True)
     job = prepare_job(
         payload(
             kdrive_enabled=True,
             synology_enabled=True,
+            synology_share="nas_backup",
             mappings=[{"local": "photos", "remote": "Fotos", "synology": "Backup/Fotos"}],
         ),
         old=None,
         shares_root=root,
-        synology_root=syn,
+        remotes_root=remotes,
         now=NOW,
         tz=TZ,
     )
+    assert job["synology_share"] == "nas_backup"
     steps = build_commands(
         job,
         shares_root=root,
@@ -292,10 +295,19 @@ def test_synology_and_kdrive_in_one_job(tmp_path):
     assert "SMB" in describe(job)
     with pytest.raises(ValueError, match="Beidseitiger"):
         prepare_job(
-            payload(mode="bisync", synology_enabled=True, confirm_delete=True),
+            payload(mode="bisync", synology_enabled=True, synology_share="nas_backup", confirm_delete=True),
             old=None,
             shares_root=root,
-            synology_root=syn,
+            remotes_root=remotes,
+            now=NOW,
+            tz=TZ,
+        )
+    with pytest.raises(ValueError, match="SMB-Share"):
+        prepare_job(
+            payload(kdrive_enabled=False, synology_enabled=True, mappings=[{"local": "photos", "synology": "x"}]),
+            old=None,
+            shares_root=root,
+            remotes_root=remotes,
             now=NOW,
             tz=TZ,
         )
@@ -303,11 +315,12 @@ def test_synology_and_kdrive_in_one_job(tmp_path):
         payload(
             kdrive_enabled=False,
             synology_enabled=True,
+            synology_share="nas_backup",
             mappings=[{"local": "photos", "remote": "", "synology": "nur-syn"}],
         ),
         old=None,
         shares_root=root,
-        synology_root=syn,
+        remotes_root=remotes,
         now=NOW,
         tz=TZ,
     )

@@ -14,6 +14,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from app import engine
+from app.remotes import resolve_synology_root
 from app.store import Store
 
 log = logging.getLogger("app.runner")
@@ -30,7 +31,7 @@ class Runner:
     ):
         self.store = store
         self.shares_root = shares_root
-        self._synology_root = synology_root
+        self._remotes_root = synology_root
         self._synology_resolver = synology_resolver
         self.tz = tz
         self._procs: dict[str, subprocess.Popen] = {}
@@ -38,10 +39,30 @@ class Runner:
         self._lock = threading.Lock()
 
     @property
+    def remotes_root(self) -> Path | None:
+        return self._remotes_root
+
+    @property
     def synology_root(self) -> Path | None:
         if self._synology_resolver is not None:
             return self._synology_resolver()
-        return self._synology_root
+        return self._remotes_root
+
+    def synology_for(self, job: dict) -> Path | None:
+        """SMB-Ziel für einen Auftrag: Remotes/<synology_share>."""
+        if not job.get("synology_enabled"):
+            return None
+        base = self._remotes_root
+        if base is None or not base.is_dir():
+            return None
+        share = (job.get("synology_share") or "").strip() or self.store.get("synology_share", "")
+        if not share:
+            return None
+        try:
+            target = resolve_synology_root(base, share)
+        except ValueError:
+            return None
+        return target if target.is_dir() else None
 
     def running_job_ids(self) -> set[str]:
         with self._lock:
@@ -79,10 +100,15 @@ class Runner:
             raise ValueError("Beidseitig braucht zuerst einen Erstabgleich")
         if job.get("kdrive_enabled", True):
             self.store.require_backend()
-        if job.get("synology_enabled") and (self.synology_root is None or not self.synology_root.is_dir()):
-            raise ValueError(
-                f"SMB-Remotes fehlen. Im Template den Path Remotes auf {engine.SYNOLOGY_EXAMPLE} setzen."
-            )
+        if job.get("synology_enabled") and self.synology_for(job) is None:
+            if self._remotes_root is None or not self._remotes_root.is_dir():
+                raise ValueError(
+                    f"SMB-Remotes fehlen. Im Template den Path Remotes auf {engine.SYNOLOGY_EXAMPLE} setzen."
+                )
+            share = (job.get("synology_share") or "").strip()
+            if not share:
+                raise ValueError("SMB-Share für diesen Auftrag wählen")
+            raise ValueError(f"SMB-Share «{share}» fehlt oder ist nicht eingehängt")
         now = datetime.now(self.tz)
         run_id = str(uuid.uuid4())
         log_path = self.store.config_dir / "logs" / f"{run_id}.log"
@@ -209,7 +235,7 @@ class Runner:
                 resync=resync,
                 stamp=stamp,
                 remote_name=remote_name,
-                synology_root=self.synology_root,
+                synology_root=self.synology_for(job),
             )
             with log_path.open("w", encoding="utf-8") as handle:
                 handle.write(f"# {job['name']}\n")
