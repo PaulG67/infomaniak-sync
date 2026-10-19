@@ -40,6 +40,10 @@ if ! grep -q 'Name="Synology"' "${USER_XML}"; then
   echo "FEHLER: Vorlage enthaelt keinen Synology-Pfad — Abbruch."
   exit 1
 fi
+if ! grep -q 'Name="Unassigned Devices"' "${USER_XML}"; then
+  echo "FEHLER: Vorlage enthaelt Unassigned Devices nicht — Abbruch."
+  exit 1
+fi
 if ! grep -q '/boot/config/plugins/rclone/.rclone.conf' "${USER_XML}"; then
   echo "FEHLER: Vorlage enthaelt den rclone-Beispielpfad nicht — Abbruch."
   exit 1
@@ -73,7 +77,7 @@ echo
 echo "Seite neu laden (F5), dann:"
 echo "  Docker -> Container hinzufuegen -> Template infomaniak-sync"
 echo "  Shares bleibt auf /mnt/user, Config auf /mnt/user/appdata/infomaniak-sync"
-echo "  Synology optional: /mnt/remotes oder der konkrete Remote-Mount"
+echo "  Synology: /mnt/remotes, Unassigned Devices: /boot/config/plugins/unassigned.devices"
 echo "  rclone-Konfiguration: /boot/config/plugins/rclone/.rclone.conf, Remote Infomaniak"
 echo "  Oder eigene kDrive-ID, E-Mail und Anwendungspasswort. In der WebUI umschaltbar."
 echo "  WebUI: http://UNRAID-IP:8794"

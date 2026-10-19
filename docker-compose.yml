@@ -21,5 +21,6 @@ services:
       - /mnt/user/appdata/infomaniak-sync:/config
       - /mnt/user:/shares
       - /mnt/remotes:/synology
+      - /boot/config/plugins/unassigned.devices:/unassigned-devices:ro
       - /boot/config/plugins/rclone/.rclone.conf:/rclone/rclone.conf:ro
     restart: unless-stopped

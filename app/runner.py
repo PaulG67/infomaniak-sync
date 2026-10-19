@@ -20,14 +20,28 @@ log = logging.getLogger("app.runner")
 
 
 class Runner:
-    def __init__(self, store: Store, shares_root: Path, tz: ZoneInfo, synology_root: Path | None = None):
+    def __init__(
+        self,
+        store: Store,
+        shares_root: Path,
+        tz: ZoneInfo,
+        synology_root: Path | None = None,
+        synology_resolver=None,
+    ):
         self.store = store
         self.shares_root = shares_root
-        self.synology_root = synology_root
+        self._synology_root = synology_root
+        self._synology_resolver = synology_resolver
         self.tz = tz
         self._procs: dict[str, subprocess.Popen] = {}
         self._cancel: set[str] = set()
         self._lock = threading.Lock()
+
+    @property
+    def synology_root(self) -> Path | None:
+        if self._synology_resolver is not None:
+            return self._synology_resolver()
+        return self._synology_root
 
     def running_job_ids(self) -> set[str]:
         with self._lock:

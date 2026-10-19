@@ -50,7 +50,7 @@ Dann **Docker → infomaniak-sync → Force Update**. Neue Template-Felder zusä
 
 Angleichen löscht Dateien auf der Zielseite. Die Oberfläche verlangt dafür eine Bestätigung. Der beidseitige Zeitplan startet erst nach einem manuellen Erstabgleich. Dabei landen überschriebene Fassungen im Versionsordner.
 
-Für Synology im Unraid-Template den Pfad **Synology** setzen (zum Beispiel `/mnt/remotes` oder der konkrete Remote-Mount). Nach Force Update einmal **Edit → Apply**.
+Für Synology im Unraid-Template die Pfade **Synology** (`/mnt/remotes`) und **Unassigned Devices** setzen. Unter **Einstellungen** den SMB-Share wählen; Quelle, Mountpoint und ob er eingehängt ist, kommen von Unraid. Nach Force Update einmal **Edit → Apply**.
 
 Ordner namens `.oc-nodes` und die Dateien darin (OpenCloud-Metadaten) bleiben in der Probelauf-Tabelle ausgeblendet. Synchronisiert werden sie weiterhin.
 
@@ -76,6 +76,7 @@ services:
       - /mnt/user/appdata/infomaniak-sync:/config
       - /mnt/user:/shares
       - /mnt/remotes:/synology
+      - /boot/config/plugins/unassigned.devices:/unassigned-devices:ro
       - /boot/config/plugins/rclone/.rclone.conf:/rclone/rclone.conf:ro
 ```
 

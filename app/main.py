@@ -15,6 +15,7 @@ from flask import Flask, abort, jsonify, make_response, redirect, render_templat
 from werkzeug.exceptions import HTTPException
 
 from app import engine
+from app import remotes as remotes_mod
 from app.runner import Runner, directory_names, probe
 from app.version import APP_VERSION
 from app.scheduler import start_scheduler
@@ -106,7 +107,8 @@ def share_count(root: Path) -> int:
 def create_app() -> Flask:
     config_dir = Path(os.environ.get("CONFIG_DIR", "/config"))
     shares_root = Path(os.environ.get("SHARES_ROOT", "/shares"))
-    synology_root = Path(os.environ.get("SYNOLOGY_ROOT", "/synology"))
+    remotes_root = Path(os.environ.get("SYNOLOGY_ROOT", "/synology"))
+    ud_config_dir = Path(os.environ.get("UD_CONFIG_DIR", "/unassigned-devices"))
     tz = load_tz(os.environ.get("TZ", "Europe/Zurich"))
     web_password = os.environ.get("WEB_PASSWORD") or ""
     web_user = os.environ.get("WEB_USER") or "admin"
@@ -114,6 +116,16 @@ def create_app() -> Flask:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     external_config = Path(os.environ.get("RCLONE_CONFIG_FILE", "/rclone/rclone.conf") or "/rclone/rclone.conf")
     store = Store(config_dir, external_config=external_config)
+
+    def synology_root() -> Path:
+        selected = store.get("synology_share", "")
+        if selected and remotes_root.is_dir():
+            try:
+                return remotes_mod.resolve_synology_root(remotes_root, selected)
+            except ValueError:
+                pass
+        return remotes_root
+
     env_warning = ""
     try:
         store.apply_env(
@@ -126,7 +138,7 @@ def create_app() -> Flask:
         env_warning = str(exc)
         log.warning("Container-Parameter ignoriert: %s", exc)
     store.interrupt_stale_runs()
-    runner = Runner(store, shares_root, tz, synology_root=synology_root)
+    runner = Runner(store, shares_root, tz, synology_root=remotes_root, synology_resolver=synology_root)
     if os.environ.get("SYNC_SCHEDULER", "1") != "0":
         start_scheduler(runner)
 
@@ -149,7 +161,8 @@ def create_app() -> Flask:
     app.secret_key = secret_path.read_bytes()
     app.config["STORE"] = store
     app.config["SHARES"] = shares_root
-    app.config["SYNOLOGY"] = synology_root
+    app.config["SYNOLOGY"] = remotes_root
+    app.config["UD_CONFIG"] = ud_config_dir
     app.config["TZ"] = tz
     app.config["TZ_NAME"] = str(tz)
     app.config["WEB_PASSWORD"] = web_password
@@ -224,9 +237,15 @@ def create_app() -> Flask:
             "shares_root": str(shares_root),
             "shares_ok": shares_root.is_dir(),
             "share_count": share_count(shares_root),
-            "synology_root": str(synology_root),
-            "synology_ok": synology_root.is_dir(),
+            "synology_root": str(synology_root()),
+            "synology_remotes_root": str(remotes_root),
+            "synology_ok": synology_root().is_dir(),
             "synology_example": engine.SYNOLOGY_EXAMPLE,
+            "synology": remotes_mod.list_synology_shares(
+                ud_config_dir=ud_config_dir,
+                remotes_root=remotes_root,
+                selected_id=store.get("synology_share", ""),
+            ),
             "app_version": APP_VERSION,
             "rclone": app.config["RCLONE"],
             "rclone_error": app.config["RCLONE_ERROR"],
@@ -258,7 +277,7 @@ def create_app() -> Flask:
             raw,
             old=old,
             shares_root=shares_root,
-            synology_root=synology_root,
+            synology_root=synology_root(),
             now=now(),
             tz=tz,
         )
@@ -332,13 +351,14 @@ def create_app() -> Flask:
 
     @app.get("/api/synology")
     def api_synology():
-        if not synology_root.is_dir():
+        root = synology_root()
+        if not root.is_dir():
             raise ValueError(
-                "Synology-Laufwerk ist nicht eingebunden. Im Unraid-Template den Pfad Synology setzen, "
-                f"zum Beispiel {engine.SYNOLOGY_EXAMPLE}."
+                "Synology-Laufwerk ist nicht eingebunden. Unter Einstellungen einen SMB-Share wählen "
+                f"oder im Template den Pfad Synology setzen, zum Beispiel {engine.SYNOLOGY_EXAMPLE}."
             )
         rel = engine.clean_rel(request.args.get("path", ""), label="Synology-Ordner")
-        return jsonify(list_dirs(synology_root, rel, label="Synology-Ordner"))
+        return jsonify(list_dirs(root, rel, label="Synology-Ordner"))
 
     def active_target(rel: str = "") -> tuple[dict, str]:
         backend = store.require_backend()
@@ -429,11 +449,27 @@ def create_app() -> Flask:
         data = payload()
         paused = data.get("schedules_paused")
         parallel = data.get("max_parallel")
+        syn_share = data.get("synology_share")
+        if syn_share is not None:
+            syn_share = str(syn_share).strip()
+            if syn_share:
+                remotes_mod.resolve_synology_root(remotes_root, syn_share)
         settings = store.update_settings(
             schedules_paused=None if paused is None else engine.as_bool(paused),
             max_parallel=None if parallel is None else int(parallel),
+            synology_share=None if syn_share is None else syn_share,
         )
-        return jsonify({"ok": True, "settings": settings})
+        return jsonify(
+            {
+                "ok": True,
+                "settings": settings,
+                "synology": remotes_mod.list_synology_shares(
+                    ud_config_dir=ud_config_dir,
+                    remotes_root=remotes_root,
+                    selected_id=settings.get("synology_share") or "",
+                ),
+            }
+        )
 
     @app.post("/api/preview")
     def api_preview():
@@ -444,7 +480,7 @@ def create_app() -> Flask:
                 raw,
                 old=None,
                 shares_root=shares_root,
-                synology_root=synology_root,
+                synology_root=synology_root(),
                 now=now(),
                 tz=tz,
                 relax_confirm=True,
@@ -458,7 +494,7 @@ def create_app() -> Flask:
                     raw,
                     old=old,
                     shares_root=shares_root,
-                    synology_root=synology_root,
+                    synology_root=synology_root(),
                     now=now(),
                     tz=tz,
                     relax_confirm=True,
@@ -485,7 +521,7 @@ def create_app() -> Flask:
             resync=engine.needs_resync(job),
             stamp="ZEITSTEMPEL",
             remote_name=remote_name,
-            synology_root=synology_root,
+            synology_root=synology_root(),
         )
         return jsonify(
             {
@@ -589,6 +625,10 @@ def create_app() -> Flask:
         nested = engine.config_exclude(store.config_dir, shares_root)
         if nested:
             extra.append(nested)
+        host_syn = os.environ.get("HOST_SYNOLOGY_ROOT", engine.HOST_SYNOLOGY).rstrip("/")
+        selected = store.get("synology_share", "")
+        if selected:
+            host_syn = f"{host_syn}/{selected}"
         filename, script = engine.host_sync_script(
             job,
             shares_root=shares_root,
@@ -598,8 +638,8 @@ def create_app() -> Flask:
             host_shares=os.environ.get("HOST_SHARES_ROOT", engine.HOST_SHARES),
             host_config=os.environ.get("HOST_CONFIG_DIR", engine.HOST_CONFIG),
             host_rclone_config=os.environ.get("HOST_RCLONE_CONFIG", engine.HOST_RCLONE_CONFIG),
-            synology_root=synology_root,
-            host_synology=os.environ.get("HOST_SYNOLOGY_ROOT", engine.HOST_SYNOLOGY),
+            synology_root=synology_root(),
+            host_synology=host_syn,
         )
         return jsonify({"ok": True, "filename": filename, "script": script})
 

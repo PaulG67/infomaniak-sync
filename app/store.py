@@ -117,13 +117,25 @@ class Store:
         except ValueError:
             parallel = 1
         parallel = min(3, max(1, parallel))
-        return {"schedules_paused": paused, "max_parallel": parallel}
+        return {
+            "schedules_paused": paused,
+            "max_parallel": parallel,
+            "synology_share": self.get("synology_share", ""),
+        }
 
-    def update_settings(self, *, schedules_paused: bool | None = None, max_parallel: int | None = None) -> dict:
+    def update_settings(
+        self,
+        *,
+        schedules_paused: bool | None = None,
+        max_parallel: int | None = None,
+        synology_share: str | None = None,
+    ) -> dict:
         if schedules_paused is not None:
             self.set("schedules_paused", "1" if schedules_paused else "0")
         if max_parallel is not None:
             self.set("max_parallel", str(min(3, max(1, int(max_parallel)))))
+        if synology_share is not None:
+            self.set("synology_share", str(synology_share).strip())
         return self.settings()
 
     def password(self) -> str:

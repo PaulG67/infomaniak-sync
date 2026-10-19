@@ -34,14 +34,14 @@ function parseRoute() {
   const parts = (location.hash || "#/").replace(/^#/, "").split("/").filter(Boolean);
   if (parts[0] === "new") return { name: "edit", id: null };
   if (parts[0] === "job" && parts[1]) return { name: "edit", id: decodeURIComponent(parts[1]) };
-  if (parts[0] === "connection") return { name: "connection" };
+  if (parts[0] === "connection" || parts[0] === "settings") return { name: "settings" };
   if (parts[0] === "history") return { name: "history" };
   if (parts[0] === "run" && parts[1]) return { name: "log", id: decodeURIComponent(parts[1]) };
   return { name: "list" };
 }
 
 function tabFor(route) {
-  if (route.name === "connection") return "connection";
+  if (route.name === "settings") return "settings";
   if (route.name === "history" || route.name === "log") return "history";
   return "list";
 }
@@ -153,7 +153,7 @@ function paint() {
     button.classList.toggle("active", button.dataset.tab === tabFor(route));
   });
   if (route.name === "edit") return renderEdit(route.id);
-  if (route.name === "connection") return renderConnection();
+  if (route.name === "settings") return renderSettings();
   if (route.name === "history") return renderHistory();
   if (route.name === "log") return renderLog(route.id);
   return renderList();
@@ -166,12 +166,12 @@ function banners() {
     parts.push(`<div class="banner warn">Keine Shares sichtbar. Im Unraid-Template den Pfad Shares auf /mnt/user setzen.</div>`);
   }
   if (!state.synology_ok) {
-    parts.push(`<div class="banner info">Synology ist optional. Für Backup im Template den Pfad Synology setzen, zum Beispiel ${esc(state.synology_example || "/mnt/remotes")}.</div>`);
+    parts.push(`<div class="banner info">Synology ist optional. Unter Einstellungen einen SMB-Share wählen oder im Template den Pfad Synology setzen, zum Beispiel ${esc(state.synology_example || "/mnt/remotes")}.</div>`);
   }
   if (!state.connection.ready) {
     const missing = state.connection.mode === "rclone"
-      ? `Die rclone-Verbindung fehlt noch. Unter Verbindung einen WebDAV-Eintrag wählen, zum Beispiel ${esc(state.connection.example_remote)}.`
-      : "Die kDrive-Verbindung fehlt noch. Unter Verbindung die rclone-Datei wählen oder Zugangsdaten eintragen.";
+      ? `Die rclone-Verbindung fehlt noch. Unter Einstellungen einen WebDAV-Eintrag wählen, zum Beispiel ${esc(state.connection.example_remote)}.`
+      : "Die kDrive-Verbindung fehlt noch. Unter Einstellungen die rclone-Datei wählen oder Zugangsdaten eintragen.";
     parts.push(`<div class="banner info">${missing}</div>`);
   }
   if (!state.rclone) {
@@ -452,8 +452,9 @@ async function updatePreview() {
   }
 }
 
-function renderConnection() {
+function renderSettings() {
   const connection = state.connection;
+  const synology = state.synology || {};
   const source = connection.source === "ui"
     ? "Zuletzt in der Weboberfläche gespeichert. Container-Parameter ändern das erst nach dem Zurücksetzen."
     : connection.source === "env"
@@ -469,43 +470,71 @@ function renderConnection() {
   const fileState = connection.rclone_present
     ? "Die rclone-Datei ist eingebunden. Es werden die Zugangsdaten daraus verwendet, keine zweiten."
     : `Die rclone-Datei ist nicht eingebunden. Im Template den Pfad setzen, zum Beispiel ${connection.example_path}.`;
+  const shares = synology.shares || [];
+  const shareRows = shares.map((item) => `<tr class="${item.selected ? "selected" : ""}">
+    <td><label class="inline check"><input type="radio" name="synology_share" value="${esc(item.id)}" ${item.selected ? "checked" : ""} /> <strong>${esc(item.id)}</strong></label></td>
+    <td><span class="path">${esc(item.source || "—")}</span><div class="meta">${esc(item.protocol || "SMB")}${item.host ? ` · ${esc(item.host)}` : ""}</div></td>
+    <td><span class="path">${esc(item.mountpoint || "—")}</span></td>
+    <td><span class="pill ${item.mounted ? "ok" : "warn"}">${item.mounted ? "eingehängt" : "ausgehängt"}</span></td>
+  </tr>`).join("");
+  const synBody = shares.length
+    ? `<div class="plan-wrap"><table class="share-table">
+        <thead><tr><th>Share</th><th>Quelle</th><th>Mountpoint</th><th>Status</th></tr></thead>
+        <tbody>${shareRows}</tbody>
+      </table></div>`
+    : `<p class="hint">Keine SMB-Remotes gefunden. Unter Unraid → Unassigned Devices einen Remote-Share einrichten. Im Template die Pfade Synology (/mnt/remotes) und Unassigned Devices (/boot/config/plugins/unassigned.devices) setzen.</p>`;
   appEl.innerHTML = `${banners()}
-    <form id="connection-form" class="card form">
-      <label>Verbindung${fieldSelect("mode", [
-        ["rclone", "Vorhandene rclone-Verbindung"],
-        ["manual", "Eigene Zugangsdaten"],
-      ], mode)}</label>
-      <div id="rclone-fields">
-        <p class="hint">Datei des Unraid-rclone-Plugins, zum Beispiel <span>${esc(connection.example_path)}</span> mit dem Eintrag <strong>[${esc(connection.example_remote)}]</strong> (<span>type = webdav</span>, <span>url</span>, <span>user</span>, <span>pass</span>). Für kDrive Solo wird <span>vendor = other</span> ergänzt, falls er fehlt. Nach einer Änderung der Datei den Container neu starten.</p>
-        <p class="meta">${esc(fileState)}</p>
-        <label>WebDAV-Eintrag<select name="rclone_remote" ${remotes.length ? "" : "disabled"}>
-          <option value="">${remotes.length ? "Eintrag wählen" : "Keine WebDAV-Einträge"}</option>
-          ${remoteOptions}
-        </select></label>
-        <p class="meta" id="rclone-meta"></p>
-      </div>
-      <div id="manual-fields">
-        <p class="hint">Dieselben Angaben wie im rclone-Eintrag <strong>[Infomaniak]</strong>: <span>type = webdav</span>, <span>url</span>, <span>user</span>, <span>pass</span>. kDrive Solo enthält WebDAV. Die Adresse ist zum Beispiel <span>https://260259.connect.kdrive.infomaniak.com</span>, der Benutzer die E-Mail. <a href="https://www.infomaniak.com/en/support/faq/2409/connect-to-kdrive-via-webdav" target="_blank" rel="noreferrer">Infomaniak-Anleitung</a></p>
-        <label>WebDAV-Adresse<input name="webdav_url" value="${esc(connection.kdrive_id ? `https://${connection.kdrive_id}.connect.kdrive.infomaniak.com` : "")}" placeholder="https://260259.connect.kdrive.infomaniak.com" spellcheck="false" /></label>
-        <p class="meta">Adresse: <span id="kdrive-url">${esc(connection.kdrive_id ? `https://${connection.kdrive_id}.connect.kdrive.infomaniak.com` : "—")}</span></p>
-        <label>E-Mail<input name="kdrive_user" type="email" value="${esc(connection.kdrive_user)}" autocomplete="username" placeholder="user aus der rclone-Datei" /></label>
-        <label>Passwort<input name="password" type="password" autocomplete="new-password" placeholder="${connection.password_set ? "gesetzt, leer lassen zum Behalten" : "Anwendungspasswort oder pass aus rclone"}" /></label>
-        <label class="inline check"><input type="checkbox" name="password_obscured" ${connection.password_obscured ? "checked" : ""} /> Das ist der pass-Wert aus der rclone-Datei, nicht das Klartext-Passwort</label>
-      </div>
-      <p class="meta">${esc(source)}</p>
-      <div class="row">
-        <button type="submit" class="primary">Speichern</button>
-        <button type="button" data-act="test-connection">Verbindung testen</button>
-        ${state.env_ready ? `<button type="button" data-act="reset-env">Auf Container-Parameter zurücksetzen</button>` : ""}
-      </div>
-      <pre id="test-output" class="preview" hidden></pre>
-    </form>
-    <form id="settings-form" class="card form" style="margin-top:.8rem">
-      <h2>Allgemein</h2>
-      <label class="inline check"><input type="checkbox" name="schedules_paused" ${state.settings.schedules_paused ? "checked" : ""} /> Alle Zeitpläne pausieren. Manuelle Läufe bleiben möglich.</label>
-      <label>Gleichzeitige Aufträge<input name="max_parallel" type="number" min="1" max="3" value="${esc(state.settings.max_parallel)}" /></label>
-      <button type="submit" class="primary">Einstellungen speichern</button>
-    </form>`;
+    <div class="settings-stack">
+      <form id="connection-form" class="card form">
+        <h2>Infomaniak</h2>
+        <p class="hint">Verbindung zu kDrive über die vorhandene rclone-Datei oder eigene Zugangsdaten.</p>
+        <label>Verbindung${fieldSelect("mode", [
+          ["rclone", "Vorhandene rclone-Verbindung"],
+          ["manual", "Eigene Zugangsdaten"],
+        ], mode)}</label>
+        <div id="rclone-fields">
+          <p class="hint">Datei des Unraid-rclone-Plugins, zum Beispiel <span>${esc(connection.example_path)}</span> mit dem Eintrag <strong>[${esc(connection.example_remote)}]</strong>.</p>
+          <p class="meta">${esc(fileState)}</p>
+          <label>WebDAV-Eintrag<select name="rclone_remote" ${remotes.length ? "" : "disabled"}>
+            <option value="">${remotes.length ? "Eintrag wählen" : "Keine WebDAV-Einträge"}</option>
+            ${remoteOptions}
+          </select></label>
+          <p class="meta" id="rclone-meta"></p>
+        </div>
+        <div id="manual-fields">
+          <p class="hint">Dieselben Angaben wie im rclone-Eintrag <strong>[Infomaniak]</strong>. <a href="https://www.infomaniak.com/en/support/faq/2409/connect-to-kdrive-via-webdav" target="_blank" rel="noreferrer">Infomaniak-Anleitung</a></p>
+          <label>WebDAV-Adresse<input name="webdav_url" value="${esc(connection.kdrive_id ? `https://${connection.kdrive_id}.connect.kdrive.infomaniak.com` : "")}" placeholder="https://260259.connect.kdrive.infomaniak.com" spellcheck="false" /></label>
+          <p class="meta">Adresse: <span id="kdrive-url">${esc(connection.kdrive_id ? `https://${connection.kdrive_id}.connect.kdrive.infomaniak.com` : "—")}</span></p>
+          <label>E-Mail<input name="kdrive_user" type="email" value="${esc(connection.kdrive_user)}" autocomplete="username" placeholder="user aus der rclone-Datei" /></label>
+          <label>Passwort<input name="password" type="password" autocomplete="new-password" placeholder="${connection.password_set ? "gesetzt, leer lassen zum Behalten" : "Anwendungspasswort oder pass aus rclone"}" /></label>
+          <label class="inline check"><input type="checkbox" name="password_obscured" ${connection.password_obscured ? "checked" : ""} /> Das ist der pass-Wert aus der rclone-Datei, nicht das Klartext-Passwort</label>
+        </div>
+        <p class="meta">${esc(source)}</p>
+        <div class="row">
+          <button type="submit" class="primary">Infomaniak speichern</button>
+          <button type="button" data-act="test-connection">Verbindung testen</button>
+          ${state.env_ready ? `<button type="button" data-act="reset-env">Auf Container-Parameter zurücksetzen</button>` : ""}
+        </div>
+        <pre id="test-output" class="preview" hidden></pre>
+      </form>
+      <form id="synology-form" class="card form">
+        <h2>Synology</h2>
+        <p class="hint">SMB-Shares aus Unassigned Devices. Wähle den Share, der als Backup-Ziel dient. Quelle und Mountpoint stammen von Unraid; der Status zeigt, ob der Share eingehängt ist.</p>
+        ${synology.ud_present ? "" : `<p class="meta">Unassigned-Devices-Konfiguration ist nicht eingebunden. Im Template den Pfad auf ${esc(synology.example_ud || "/boot/config/plugins/unassigned.devices")} setzen und Edit → Apply.</p>`}
+        ${synBody}
+        <div class="row" style="margin-top:.75rem">
+          <button type="submit" class="primary" ${shares.length ? "" : "disabled"}>Synology-Share speichern</button>
+          <button type="button" data-act="clear-synology" ${state.settings.synology_share ? "" : "disabled"}>Auswahl leeren</button>
+        </div>
+        <p class="meta">Aktuell: ${esc(state.settings.synology_share || "gesamtes Remotes-Verzeichnis")}</p>
+      </form>
+      <form id="settings-form" class="card form">
+        <h2>Allgemein</h2>
+        <label class="inline check"><input type="checkbox" name="schedules_paused" ${state.settings.schedules_paused ? "checked" : ""} /> Alle Zeitpläne pausieren. Manuelle Läufe bleiben möglich.</label>
+        <label>Gleichzeitige Aufträge<input name="max_parallel" type="number" min="1" max="3" value="${esc(state.settings.max_parallel)}" /></label>
+        <button type="submit" class="primary">Allgemein speichern</button>
+      </form>
+    </div>`;
   syncConnectionFields();
 }
 
@@ -785,6 +814,13 @@ async function onClick(event) {
       await api("/api/connection/reset-env", { method: "POST", body: "{}" });
       await reload();
       paint();
+      return;
+    }
+    if (act === "clear-synology") {
+      await api("/api/settings", { method: "POST", body: JSON.stringify({ synology_share: "" }) });
+      await reload();
+      showNote("Synology-Auswahl geleert.");
+      paint();
     }
   } catch (error) {
     showError(error.message);
@@ -832,6 +868,26 @@ async function onSubmit(event) {
     }
     return;
   }
+  if (form.id === "synology-form") {
+    event.preventDefault();
+    const chosen = form.querySelector("[name=synology_share]:checked");
+    if (!chosen) {
+      showError("Einen Synology-Share wählen");
+      return;
+    }
+    try {
+      await api("/api/settings", {
+        method: "POST",
+        body: JSON.stringify({ synology_share: chosen.value }),
+      });
+      await reload();
+      showNote("Synology-Share gespeichert.");
+      paint();
+    } catch (error) {
+      showError(error.message);
+    }
+    return;
+  }
   if (form.id === "settings-form") {
     event.preventDefault();
     try {
@@ -843,6 +899,7 @@ async function onSubmit(event) {
         }),
       });
       await reload();
+      showNote("Allgemeine Einstellungen gespeichert.");
       paint();
     } catch (error) {
       showError(error.message);
@@ -900,7 +957,7 @@ window.addEventListener("hashchange", () => { showError(""); paint(); });
 reload().then(paint).catch((error) => showError(error.message));
 setInterval(async () => {
   const route = parseRoute().name;
-  if (route === "edit" || route === "connection" || route === "log") return;
+  if (route === "edit" || route === "settings" || route === "log") return;
   try {
     await reload();
     paint();
