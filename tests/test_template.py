@@ -35,3 +35,4 @@ def test_unraid_template_has_required_fields():
     assert "my-infomaniak-sync.xml" in script
     assert "set -euo pipefail" in script
     assert "User Scripts" not in script
+    assert 'Name="(Remotes|Synology)"' in script
