@@ -91,7 +91,7 @@ def test_upload_command_has_no_secret(tmp_path):
         workdir_base=tmp_path / "bisync",
         version_root=tmp_path / "versions",
         stamp="20261012-100000",
-    )[0]
+    )[0]["argv"]
     assert argv[:4] == ["rclone", "copy", str((root / "photos").resolve()), "kdrive:Fotos"]
     assert "--update" in argv
     assert "--delete-after" not in argv
@@ -119,7 +119,7 @@ def test_mirror_and_bisync_flags(tmp_path):
         workdir_base=tmp_path / "bisync",
         version_root=tmp_path / "versions",
         stamp="20261012-100000",
-    )[0]
+    )[0]["argv"]
     assert mirror_cmd[1] == "sync"
     assert "--delete-after" in mirror_cmd
     assert "--backup-dir" in mirror_cmd
@@ -149,7 +149,7 @@ def test_mirror_and_bisync_flags(tmp_path):
         version_root=tmp_path / "versions",
         resync=True,
         stamp="20261012-100000",
-    )[0]
+    )[0]["argv"]
     assert bisync_cmd[1] == "bisync"
     assert "--resilient" in bisync_cmd
     assert "--resync-mode" in bisync_cmd
@@ -226,7 +226,7 @@ def test_named_remote_in_command(tmp_path):
         version_root=tmp_path / "versions",
         stamp="20261012-100000",
         remote_name="Infomaniak",
-    )[0]
+    )[0]["argv"]
     assert "Infomaniak:Fotos" in argv
     assert any(part.startswith("Infomaniak:_Versionen/") for part in argv)
 
@@ -243,7 +243,7 @@ def test_dry_run_uses_debug_json_log(tmp_path):
         version_root=tmp_path / "versions",
         dry_run=True,
         stamp="20261012-100000",
-    )[0]
+    )[0]["argv"]
     live = build_commands(
         job,
         shares_root=root,
@@ -252,11 +252,77 @@ def test_dry_run_uses_debug_json_log(tmp_path):
         workdir_base=tmp_path / "bisync",
         version_root=tmp_path / "versions",
         stamp="20261012-100000",
-    )[0]
+    )[0]["argv"]
     assert "--dry-run" in dry and "--use-json-log" in dry
     assert dry[dry.index("--log-level") + 1] == "DEBUG"
     assert "--use-json-log" not in live
     assert live[live.index("--log-level") + 1] == "NOTICE"
+
+
+def test_synology_and_kdrive_in_one_job(tmp_path):
+    root = shares(tmp_path)
+    syn = tmp_path / "synology"
+    syn.mkdir()
+    job = prepare_job(
+        payload(
+            kdrive_enabled=True,
+            synology_enabled=True,
+            mappings=[{"local": "photos", "remote": "Fotos", "synology": "Backup/Fotos"}],
+        ),
+        old=None,
+        shares_root=root,
+        synology_root=syn,
+        now=NOW,
+        tz=TZ,
+    )
+    steps = build_commands(
+        job,
+        shares_root=root,
+        config_path=tmp_path / "rclone.conf",
+        filter_path=tmp_path / "filters.txt",
+        workdir_base=tmp_path / "bisync",
+        version_root=tmp_path / "versions",
+        stamp="20261012-100000",
+        synology_root=syn,
+    )
+    assert [step["target"] for step in steps] == ["kdrive", "synology"]
+    assert steps[0]["argv"][:4] == ["rclone", "copy", str((root / "photos").resolve()), "kdrive:Fotos"]
+    assert steps[1]["argv"][1] == "copy"
+    assert str((syn / "Backup" / "Fotos").resolve()) in steps[1]["argv"]
+    assert "Synology" in describe(job)
+    with pytest.raises(ValueError, match="Beidseitiger"):
+        prepare_job(
+            payload(mode="bisync", synology_enabled=True, confirm_delete=True),
+            old=None,
+            shares_root=root,
+            synology_root=syn,
+            now=NOW,
+            tz=TZ,
+        )
+    only_syn = prepare_job(
+        payload(
+            kdrive_enabled=False,
+            synology_enabled=True,
+            mappings=[{"local": "photos", "remote": "", "synology": "nur-syn"}],
+        ),
+        old=None,
+        shares_root=root,
+        synology_root=syn,
+        now=NOW,
+        tz=TZ,
+    )
+    only_steps = build_commands(
+        only_syn,
+        shares_root=root,
+        config_path=tmp_path / "rclone.conf",
+        filter_path=tmp_path / "filters.txt",
+        workdir_base=tmp_path / "bisync",
+        version_root=tmp_path / "versions",
+        stamp="20261012-100000",
+        synology_root=syn,
+    )
+    assert len(only_steps) == 1
+    assert only_steps[0]["target"] == "synology"
 
 
 def test_dry_run_table_copy_overwrite_delete():
@@ -441,3 +507,32 @@ def test_host_script_uses_unraid_paths(tmp_path):
     assert '"$RCLONE_CONFIG"' in script
     assert "--dry-run" not in script
     assert ".oc-nodes" not in script
+
+
+def test_host_script_includes_synology(tmp_path):
+    root = shares(tmp_path)
+    syn = tmp_path / "synology"
+    (syn / "Backup").mkdir(parents=True)
+    job = prepare_job(
+        payload(
+            kdrive_enabled=True,
+            synology_enabled=True,
+            mappings=[{"local": "photos", "remote": "Fotos", "synology": "Backup/Fotos"}],
+        ),
+        old=None,
+        shares_root=root,
+        synology_root=syn,
+        now=NOW,
+        tz=TZ,
+    )
+    _, script = host_sync_script(
+        job,
+        shares_root=root,
+        config_dir=tmp_path / "config",
+        remote_name="Infomaniak",
+        synology_root=syn,
+        host_synology="/mnt/remotes",
+    )
+    assert "SYNOLOGY=/mnt/remotes" in script
+    assert '"${SYNOLOGY}/Backup/Fotos"' in script
+    assert "Infomaniak:Fotos" in script

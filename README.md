@@ -40,7 +40,8 @@ Dann **Docker → infomaniak-sync → Force Update**. Neue Template-Felder zusä
 
 ## Was ein Auftrag kann
 
-- Nur hochladen, nur herunterladen, eine Seite angleichen (mit Löschen) oder beidseitig
+- Infomaniak kDrive und/oder Synology-Backup in demselben Auftrag, jeweils einzeln abschaltbar
+- Nur hochladen, nur herunterladen, eine Seite angleichen (mit Löschen) oder beidseitig (beidseitig nur mit Infomaniak)
 - Vorhandene Dateien überschreiben, nur neuere übernehmen, überspringen oder die alte Fassung in `_Versionen` legen
 - Beidseitig: neuere oder grössere Datei, Unraid oder kDrive gewinnt, oder beide Fassungen bleiben
 - Zeitplan manuell, im Intervall, täglich, wöchentlich oder als Cron
@@ -49,9 +50,11 @@ Dann **Docker → infomaniak-sync → Force Update**. Neue Template-Felder zusä
 
 Angleichen löscht Dateien auf der Zielseite. Die Oberfläche verlangt dafür eine Bestätigung. Der beidseitige Zeitplan startet erst nach einem manuellen Erstabgleich. Dabei landen überschriebene Fassungen im Versionsordner.
 
+Für Synology im Unraid-Template den Pfad **Synology** setzen (zum Beispiel `/mnt/remotes` oder der konkrete Remote-Mount). Nach Force Update einmal **Edit → Apply**.
+
 Ordner namens `.oc-nodes` und die Dateien darin (OpenCloud-Metadaten) bleiben in der Probelauf-Tabelle ausgeblendet. Synchronisiert werden sie weiterhin.
 
-Unter jedem Auftrag lässt sich ein Shell-Skript kopieren oder herunterladen und in User Scripts einfügen. Es startet denselben Abgleich mit rclone und der Datei `/boot/config/plugins/rclone/.rclone.conf`. Die Pfade `SHARES` und `CONFIG_DIR` am Anfang des Skripts entsprechen dem Template.
+Unter jedem Auftrag lässt sich ein Shell-Skript kopieren oder herunterladen und in User Scripts einfügen. Es startet denselben Abgleich mit rclone. Die Pfade `SHARES`, `CONFIG_DIR` und bei Bedarf `SYNOLOGY` am Anfang des Skripts entsprechen dem Template.
 
 ## Docker Compose
 
@@ -72,6 +75,7 @@ services:
     volumes:
       - /mnt/user/appdata/infomaniak-sync:/config
       - /mnt/user:/shares
+      - /mnt/remotes:/synology
       - /boot/config/plugins/rclone/.rclone.conf:/rclone/rclone.conf:ro
 ```
 

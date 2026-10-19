@@ -165,6 +165,9 @@ function banners() {
   if (!state.shares_ok || state.share_count === 0) {
     parts.push(`<div class="banner warn">Keine Shares sichtbar. Im Unraid-Template den Pfad Shares auf /mnt/user setzen.</div>`);
   }
+  if (!state.synology_ok) {
+    parts.push(`<div class="banner info">Synology ist optional. Für Backup im Template den Pfad Synology setzen, zum Beispiel ${esc(state.synology_example || "/mnt/remotes")}.</div>`);
+  }
   if (!state.connection.ready) {
     const missing = state.connection.mode === "rclone"
       ? `Die rclone-Verbindung fehlt noch. Unter Verbindung einen WebDAV-Eintrag wählen, zum Beispiel ${esc(state.connection.example_remote)}.`
@@ -183,13 +186,22 @@ function renderList() {
   const cards = state.jobs.map((job) => {
     const active = isActive(job.id);
     const status = active ? "running" : (job.last_status || "");
-    const pairs = job.mappings.map((item) => `${item.local || "/"} → ${item.remote || "/"}`).join(", ");
+    const targets = [
+      job.kdrive_enabled !== false ? "Infomaniak" : null,
+      job.synology_enabled ? "Synology" : null,
+    ].filter(Boolean).join(" + ") || "kein Ziel";
+    const pairs = job.mappings.map((item) => {
+      const ends = [];
+      if (job.kdrive_enabled !== false) ends.push(`kDrive:${item.remote || "/"}`);
+      if (job.synology_enabled) ends.push(`Synology:${item.synology || "/"}`);
+      return `${item.local || "/"} → ${ends.join(" · ") || "—"}`;
+    }).join(", ");
     return `<article class="card job">
       <div class="split">
         <h2>${esc(job.name)}</h2>
         <span class="pill ${esc(status)}">${esc(status ? STATUS[status] || status : "bereit")}</span>
       </div>
-      <p class="meta">${esc(MODE[job.mode] || job.mode)} · ${esc(job.schedule_label)} · ${job.enabled ? "aktiv" : "pausiert"}<br>${esc(pairs)}</p>
+      <p class="meta">${esc(MODE[job.mode] || job.mode)} · ${esc(targets)} · ${esc(job.schedule_label)} · ${job.enabled ? "aktiv" : "pausiert"}<br>${esc(pairs)}</p>
       <p class="meta">Nächster Lauf: ${esc(job.next_run ? fmtTime(job.next_run) : "—")}${job.schedule_block ? ` · ${esc(job.schedule_block)}` : ""}</p>
       ${job.last_summary ? `<p class="meta">${esc(job.last_summary)}</p>` : ""}
       <div class="row">
@@ -229,14 +241,17 @@ function renderEdit(id) {
   }
   const job = existing ? structuredClone(existing) : structuredClone(state.blank);
   const schedule = job.schedule || state.blank.schedule;
-  const maps = (job.mappings.length ? job.mappings : [{ local: "", remote: "" }]).map((item) => mappingRow(item)).join("");
+  const maps = (job.mappings.length ? job.mappings : [{ local: "", remote: "", synology: "" }]).map((item) => mappingRow(item)).join("");
   appEl.innerHTML = `<form id="job-form" class="editor" data-id="${esc(id || "")}">
     <div class="stack">
       <section class="card form">
         <label>Name<input name="name" required maxlength="80" value="${esc(job.name)}" /></label>
         <label class="inline"><input type="checkbox" name="enabled" ${job.enabled ? "checked" : ""} /> Zeitplan für diesen Auftrag aktiv</label>
+        <label class="inline check"><input type="checkbox" name="kdrive_enabled" ${job.kdrive_enabled !== false ? "checked" : ""} /> Infomaniak kDrive in diesem Auftrag</label>
+        <label class="inline check"><input type="checkbox" name="synology_enabled" ${job.synology_enabled ? "checked" : ""} /> Synology-Backup in diesem Auftrag</label>
+        <p class="hint">Mindestens ein Ziel muss aktiv sein. Synology nutzt das im Template eingebundene Laufwerk${state.synology_ok ? "" : " (noch nicht eingebunden)"}.</p>
         <div class="split"><strong>Ordner</strong><button type="button" data-act="add-map">Ordnerpaar hinzufügen</button></div>
-        <p class="hint">Ein Share ist ein Ordner direkt unter dem gemounteten Pfad. Unterordner trägst du als share/unterordner ein. Der kDrive-Ordner darf anders heissen oder tiefer liegen.</p>
+        <p class="hint">Ein Share ist ein Ordner direkt unter dem gemounteten Pfad. Unterordner trägst du als share/unterordner ein. Zielordner auf kDrive und Synology dürfen anders heissen oder tiefer liegen.</p>
         <div id="maps">${maps}</div>
         <div id="confirm-root-field">
           <label class="inline check"><input type="checkbox" name="confirm_root" ${job.confirm_root ? "checked" : ""} /> Gesamten gemounteten Inhalt synchronisieren</label>
@@ -326,10 +341,12 @@ function renderEdit(id) {
 function mappingRow(item) {
   return `<div class="mapping">
     <label>Unraid<input name="local" value="${esc(item.local || "")}" spellcheck="false" placeholder="photos oder photos/2024" /></label>
-    <label>kDrive<input name="remote" value="${esc(item.remote || "")}" spellcheck="false" placeholder="Fotos oder Archiv/Fotos" /></label>
+    <label data-target="kdrive">kDrive<input name="remote" value="${esc(item.remote || "")}" spellcheck="false" placeholder="Fotos oder Archiv/Fotos" /></label>
+    <label data-target="synology">Synology<input name="synology" value="${esc(item.synology || "")}" spellcheck="false" placeholder="Backup/Fotos" /></label>
     <div class="row map-actions">
       <button type="button" data-act="browse" data-field="local">Unraid wählen</button>
-      <button type="button" data-act="browse" data-field="remote">kDrive wählen</button>
+      <button type="button" data-act="browse" data-field="remote" data-target="kdrive">kDrive wählen</button>
+      <button type="button" data-act="browse" data-field="synology" data-target="synology">Synology wählen</button>
       <button type="button" data-act="same-path">Gleicher Pfad</button>
       <button type="button" data-act="base-name">Nur Ordnername</button>
       <button type="button" data-act="remove-map">Entfernen</button>
@@ -362,6 +379,10 @@ function syncVisibility() {
   document.getElementById("cron-field").hidden = kind !== "cron";
   const root = [...form.querySelectorAll("[name=local]")].some((input) => input.value.trim() === "");
   document.getElementById("confirm-root-field").hidden = !root;
+  const kdriveOn = field("kdrive_enabled").checked;
+  const synOn = field("synology_enabled").checked;
+  form.querySelectorAll("[data-target=kdrive]").forEach((el) => { el.hidden = !kdriveOn; });
+  form.querySelectorAll("[data-target=synology]").forEach((el) => { el.hidden = !synOn; });
 }
 
 function readJob() {
@@ -373,9 +394,12 @@ function readJob() {
   const job = {
     name: field("name").value.trim(),
     enabled: field("enabled").checked,
+    kdrive_enabled: field("kdrive_enabled").checked,
+    synology_enabled: field("synology_enabled").checked,
     mappings: [...form.querySelectorAll(".mapping")].map((row) => ({
       local: row.querySelector("[name=local]").value.trim(),
       remote: row.querySelector("[name=remote]").value.trim(),
+      synology: row.querySelector("[name=synology]").value.trim(),
     })),
     mode,
     existing: mode === "bisync" ? (keepVersion ? "version" : "overwrite") : field("existing").value,
@@ -561,13 +585,13 @@ function renderPlan(actions, total, status) {
   };
   const body = actions.length ? actions.map((row) => `<tr>
     ${cell(row.local, row.local_state)}
-    <td class="act ${esc(row.kind)}">${esc(row.label)}</td>
+    <td class="act ${esc(row.kind)}">${esc(row.label)}${row.target_label ? `<div class="meta">${esc(row.target_label)}</div>` : ""}</td>
     ${cell(row.remote, row.remote_state)}
   </tr>`).join("") : `<tr><td colspan="3" class="empty">${esc(empty)}</td></tr>`;
   const legend = `<p class="plan-legend"><span class="st-exists">vorhanden</span><span class="st-create">wird erstellt</span><span class="st-overwrite">wird überschrieben</span><span class="st-delete">wird gelöscht</span></p>`;
   const more = total > actions.length ? `<p class="meta">Die ersten ${actions.length} von ${total} Dateien.</p>` : "";
   host.innerHTML = `${actions.length ? legend : ""}<div class="plan-wrap"><table class="plan">
-    <thead><tr><th>Unraid</th><th>Vorgang</th><th>Infomaniak</th></tr></thead>
+    <thead><tr><th>Unraid</th><th>Vorgang</th><th>Ziel</th></tr></thead>
     <tbody>${body}</tbody>
   </table></div>${more}`;
 }
@@ -584,11 +608,14 @@ function closeModal() {
 }
 
 async function showBrowse(path) {
-  const local = browse.field === "local";
+  const field = browse.field;
+  const endpoint = field === "local" ? "/api/local" : (field === "synology" ? "/api/synology" : "/api/remote");
+  const title = field === "local" ? "Unraid" : (field === "synology" ? "Synology" : "kDrive");
+  const rootName = field === "local" ? "Shares" : title;
   const query = new URLSearchParams({ path: path || "" });
   try {
-    const data = await api(`${local ? "/api/local" : "/api/remote"}?${query}`);
-    const crumbs = [{ name: local ? "Shares" : "kDrive", path: "" }];
+    const data = await api(`${endpoint}?${query}`);
+    const crumbs = [{ name: rootName, path: "" }];
     if (data.path) {
       const acc = [];
       data.path.split("/").forEach((part) => {
@@ -598,14 +625,20 @@ async function showBrowse(path) {
     }
     const dirs = data.dirs.map((dir) =>
       `<button type="button" data-act="enter" data-path="${esc(dir.path)}">${esc(dir.name)}</button>`).join("");
-    openModal(`<div class="split"><h2 id="modal-title">${local ? "Unraid" : "kDrive"}</h2><button type="button" data-act="close-modal">Schliessen</button></div>
+    const canMkdir = field === "remote";
+    const rootHint = field === "local"
+      ? "Die oberste Ebene sind die Unraid-Shares."
+      : (field === "synology"
+        ? "Die oberste Ebene ist das eingebundene Synology-Laufwerk."
+        : "Die oberste WebDAV-Ebene enthält den kDrive-Ordner und oft einen Papierkorb. Wähle den Ordner darin.");
+    openModal(`<div class="split"><h2 id="modal-title">${title}</h2><button type="button" data-act="close-modal">Schliessen</button></div>
       <div class="crumbs">${crumbs.map((crumb) => `<button type="button" data-act="enter" data-path="${esc(crumb.path)}">${esc(crumb.name)}</button>`).join("")}</div>
       <div class="dirlist">${dirs || `<p class="hint">Keine Unterordner.</p>`}</div>
       <div class="row">
         <button type="button" class="primary" data-act="choose" data-path="${esc(data.path)}">Diesen Ordner verwenden</button>
       </div>
-      ${local ? "" : `<form id="mkdir-form" class="form" style="margin-top:.8rem"><label>Neuen Ordner hier anlegen<input name="folder" /></label><button type="submit">Anlegen</button></form>`}
-      ${data.path ? "" : `<p class="hint">${local ? "Die oberste Ebene sind die Unraid-Shares." : "Die oberste WebDAV-Ebene enthält den kDrive-Ordner und oft einen Papierkorb. Wähle den Ordner darin."}</p>`}`);
+      ${canMkdir ? `<form id="mkdir-form" class="form" style="margin-top:.8rem"><label>Neuen Ordner hier anlegen<input name="folder" /></label><button type="submit">Anlegen</button></form>` : ""}
+      ${data.path ? "" : `<p class="hint">${rootHint}</p>`}`);
     browse.path = data.path;
   } catch (error) {
     openModal(`<h2 id="modal-title">Ordner</h2><p class="flash">${esc(error.message)}</p><button type="button" data-act="close-modal">Schliessen</button>`);
@@ -669,7 +702,7 @@ async function onClick(event) {
       return;
     }
     if (act === "add-map") {
-      document.getElementById("maps").insertAdjacentHTML("beforeend", mappingRow({ local: "", remote: "" }));
+      document.getElementById("maps").insertAdjacentHTML("beforeend", mappingRow({ local: "", remote: "", synology: "" }));
       dirty = true;
       syncVisibility();
       return;
@@ -679,6 +712,7 @@ async function onClick(event) {
       if (document.querySelectorAll(".mapping").length === 1) {
         row.querySelector("[name=local]").value = "";
         row.querySelector("[name=remote]").value = "";
+        row.querySelector("[name=synology]").value = "";
       } else row.remove();
       dirty = true;
       syncVisibility();
@@ -688,8 +722,9 @@ async function onClick(event) {
     if (act === "same-path" || act === "base-name") {
       const row = actEl.closest(".mapping");
       const local = row.querySelector("[name=local]").value.trim();
-      const remote = act === "same-path" ? local : (local.split("/").filter(Boolean).pop() || local);
-      row.querySelector("[name=remote]").value = remote;
+      const value = act === "same-path" ? local : (local.split("/").filter(Boolean).pop() || local);
+      row.querySelector("[name=remote]").value = value;
+      row.querySelector("[name=synology]").value = value;
       dirty = true;
       schedulePreview();
       return;

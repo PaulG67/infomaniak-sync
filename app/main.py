@@ -106,6 +106,7 @@ def share_count(root: Path) -> int:
 def create_app() -> Flask:
     config_dir = Path(os.environ.get("CONFIG_DIR", "/config"))
     shares_root = Path(os.environ.get("SHARES_ROOT", "/shares"))
+    synology_root = Path(os.environ.get("SYNOLOGY_ROOT", "/synology"))
     tz = load_tz(os.environ.get("TZ", "Europe/Zurich"))
     web_password = os.environ.get("WEB_PASSWORD") or ""
     web_user = os.environ.get("WEB_USER") or "admin"
@@ -125,7 +126,7 @@ def create_app() -> Flask:
         env_warning = str(exc)
         log.warning("Container-Parameter ignoriert: %s", exc)
     store.interrupt_stale_runs()
-    runner = Runner(store, shares_root, tz)
+    runner = Runner(store, shares_root, tz, synology_root=synology_root)
     if os.environ.get("SYNC_SCHEDULER", "1") != "0":
         start_scheduler(runner)
 
@@ -148,6 +149,7 @@ def create_app() -> Flask:
     app.secret_key = secret_path.read_bytes()
     app.config["STORE"] = store
     app.config["SHARES"] = shares_root
+    app.config["SYNOLOGY"] = synology_root
     app.config["TZ"] = tz
     app.config["TZ_NAME"] = str(tz)
     app.config["WEB_PASSWORD"] = web_password
@@ -222,6 +224,9 @@ def create_app() -> Flask:
             "shares_root": str(shares_root),
             "shares_ok": shares_root.is_dir(),
             "share_count": share_count(shares_root),
+            "synology_root": str(synology_root),
+            "synology_ok": synology_root.is_dir(),
+            "synology_example": engine.SYNOLOGY_EXAMPLE,
             "app_version": APP_VERSION,
             "rclone": app.config["RCLONE"],
             "rclone_error": app.config["RCLONE_ERROR"],
@@ -249,7 +254,14 @@ def create_app() -> Flask:
         return job
 
     def save_from(raw: dict, old: dict | None) -> dict:
-        job = engine.prepare_job(raw, old=old, shares_root=shares_root, now=now(), tz=tz)
+        job = engine.prepare_job(
+            raw,
+            old=old,
+            shares_root=shares_root,
+            synology_root=synology_root,
+            now=now(),
+            tz=tz,
+        )
         store.put_job(job)
         return engine.public_job(job)
 
@@ -299,10 +311,8 @@ def create_app() -> Flask:
     def api_state():
         return jsonify(state())
 
-    @app.get("/api/local")
-    def api_local():
-        rel = engine.clean_rel(request.args.get("path", ""), label="Unraid-Ordner")
-        folder = engine.local_path(shares_root, rel)
+    def list_dirs(root: Path, rel: str, *, label: str) -> dict:
+        folder = engine.under_root(root, rel, label=label, must_exist=True)
         dirs = []
         try:
             entries = sorted(folder.iterdir(), key=lambda item: item.name.lower())
@@ -313,7 +323,22 @@ def create_app() -> Flask:
                 continue
             child = rel + "/" + entry.name if rel else entry.name
             dirs.append({"name": entry.name, "path": child})
-        return jsonify({"ok": True, "path": rel, "dirs": dirs})
+        return {"ok": True, "path": rel, "dirs": dirs}
+
+    @app.get("/api/local")
+    def api_local():
+        rel = engine.clean_rel(request.args.get("path", ""), label="Unraid-Ordner")
+        return jsonify(list_dirs(shares_root, rel, label="Unraid-Ordner"))
+
+    @app.get("/api/synology")
+    def api_synology():
+        if not synology_root.is_dir():
+            raise ValueError(
+                "Synology-Laufwerk ist nicht eingebunden. Im Unraid-Template den Pfad Synology setzen, "
+                f"zum Beispiel {engine.SYNOLOGY_EXAMPLE}."
+            )
+        rel = engine.clean_rel(request.args.get("path", ""), label="Synology-Ordner")
+        return jsonify(list_dirs(synology_root, rel, label="Synology-Ordner"))
 
     def active_target(rel: str = "") -> tuple[dict, str]:
         backend = store.require_backend()
@@ -415,13 +440,29 @@ def create_app() -> Flask:
         data = payload()
         raw = data.get("job") if isinstance(data.get("job"), dict) else data
         try:
-            job = engine.prepare_job(raw, old=None, shares_root=shares_root, now=now(), tz=tz, relax_confirm=True)
+            job = engine.prepare_job(
+                raw,
+                old=None,
+                shares_root=shares_root,
+                synology_root=synology_root,
+                now=now(),
+                tz=tz,
+                relax_confirm=True,
+            )
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc), "description": "", "commands": []}), 400
         if raw.get("id"):
             old = store.get_job(str(raw.get("id")))
             if old:
-                job = engine.prepare_job(raw, old=old, shares_root=shares_root, now=now(), tz=tz, relax_confirm=True)
+                job = engine.prepare_job(
+                    raw,
+                    old=old,
+                    shares_root=shares_root,
+                    synology_root=synology_root,
+                    now=now(),
+                    tz=tz,
+                    relax_confirm=True,
+                )
         backend = store.backend()
         if backend["mode"] == "rclone" and backend["remote"]:
             remote_name = backend["remote"]
@@ -429,10 +470,14 @@ def create_app() -> Flask:
         else:
             remote_name = "kdrive"
             config_path = store.conf_path
-        commands = engine.build_commands(
+            if not Path(config_path).is_file():
+                config_path = store.config_dir / "rclone-local.conf"
+                if not config_path.is_file():
+                    config_path.write_text("# local only\n", encoding="utf-8")
+        steps = engine.build_commands(
             job,
             shares_root=shares_root,
-            config_path=config_path,
+            config_path=Path(config_path),
             filter_path=store.config_dir / "filters" / f"{job['id']}.txt",
             workdir_base=store.config_dir / "bisync",
             version_root=store.config_dir / "versions",
@@ -440,12 +485,13 @@ def create_app() -> Flask:
             resync=engine.needs_resync(job),
             stamp="ZEITSTEMPEL",
             remote_name=remote_name,
+            synology_root=synology_root,
         )
         return jsonify(
             {
                 "ok": True,
                 "description": engine.describe(job),
-                "commands": [engine.format_command(argv) for argv in commands],
+                "commands": [engine.format_command(step["argv"]) for step in steps],
             }
         )
 
@@ -552,6 +598,8 @@ def create_app() -> Flask:
             host_shares=os.environ.get("HOST_SHARES_ROOT", engine.HOST_SHARES),
             host_config=os.environ.get("HOST_CONFIG_DIR", engine.HOST_CONFIG),
             host_rclone_config=os.environ.get("HOST_RCLONE_CONFIG", engine.HOST_RCLONE_CONFIG),
+            synology_root=synology_root,
+            host_synology=os.environ.get("HOST_SYNOLOGY_ROOT", engine.HOST_SYNOLOGY),
         )
         return jsonify({"ok": True, "filename": filename, "script": script})
 

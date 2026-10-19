@@ -11,6 +11,7 @@ services:
       - TZ=Europe/Zurich
       - PORT=8794
       - SHARES_ROOT=/shares
+      - SYNOLOGY_ROOT=/synology
       - KDRIVE_ID=
       - KDRIVE_USER=
       - KDRIVE_PASSWORD=
@@ -19,5 +20,6 @@ services:
     volumes:
       - /mnt/user/appdata/infomaniak-sync:/config
       - /mnt/user:/shares
+      - /mnt/remotes:/synology
       - /boot/config/plugins/rclone/.rclone.conf:/rclone/rclone.conf:ro
     restart: unless-stopped

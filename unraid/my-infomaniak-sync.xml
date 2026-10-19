@@ -10,7 +10,7 @@
   <Support>https://github.com/PaulG67/infomaniak-sync/issues</Support>
   <Project>https://github.com/PaulG67/infomaniak-sync</Project>
   <Overview>
-Infomaniak Sync gleicht Unraid-Shares mit kDrive ab. Pro Share den ganzen Share oder einzelne Unterordner, mit eigenem Zielordner auf kDrive. Zeitplan, Richtung, Ueberschreiben oder Versionen.&#13;
+Infomaniak Sync gleicht Unraid-Shares mit kDrive und optional einem Synology-Backup ab. Pro Auftrag beide Ziele oder nur eines. Zeitplan, Richtung, Ueberschreiben oder Versionen.&#13;
 &#13;
 WebDAV ist bei kSuite Free / my kSuite / my kSuite+ nicht enthalten.&#13;
 &#13;
@@ -36,6 +36,7 @@ Updates: Docker - infomaniak-sync - Force Update. Neue Felder nur mit Edit - App
   <Config Name="WebUI Port" Target="8794" Default="8794" Mode="tcp" Description="Web-Oberflaeche Infomaniak Sync" Type="Port" Display="always" Required="true" Mask="false">8794</Config>
   <Config Name="Config" Target="/config" Default="/mnt/user/appdata/infomaniak-sync" Mode="rw" Description="Einstellungen, Protokolle und lokale Versionskopien" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/infomaniak-sync</Config>
   <Config Name="Shares" Target="/shares" Default="/mnt/user" Mode="rw" Description="Unraid-Shares. Standard /mnt/user zeigt alle Shares. Schreibzugriff, damit auch Herunterladen und lokales Angleichen moeglich sind." Type="Path" Display="always" Required="true" Mask="false">/mnt/user</Config>
+  <Config Name="Synology" Target="/synology" Default="/mnt/remotes" Mode="rw" Description="Eingebundenes Synology-Backup (Unassigned Devices / Remotes). Beispiel /mnt/remotes oder /mnt/remotes/SYNOLOGY. Leer lassen bzw. Pfad nur setzen, wenn Synology als zweites Ziel genutzt wird." Type="Path" Display="always" Required="false" Mask="false">/mnt/remotes</Config>
   <Config Name="rclone-Konfiguration" Target="/rclone/rclone.conf" Default="/boot/config/plugins/rclone/.rclone.conf" Mode="ro" Description="Vorhandene rclone-Datei, nur lesend. Beispiel: /boot/config/plugins/rclone/.rclone.conf mit dem Eintrag [Infomaniak]. Leer lassen, wenn stattdessen kDrive-ID, Benutzer und Passwort verwendet werden. In der WebUI laesst sich ein anderer WebDAV-Eintrag derselben Datei waehlen." Type="Path" Display="always" Required="false" Mask="false">/boot/config/plugins/rclone/.rclone.conf</Config>
   <Config Name="rclone-Remote" Target="RCLONE_REMOTE" Default="Infomaniak" Mode="" Description="Name des WebDAV-Eintrags in der rclone-Datei, ohne eckige Klammern. Beispiel: Infomaniak, passend zu [Infomaniak]. Die WebUI zeigt alle WebDAV-Eintraege dieser Datei zur Auswahl." Type="Variable" Display="always" Required="false" Mask="false">Infomaniak</Config>
   <Config Name="kDrive-ID" Target="KDRIVE_ID" Default="" Mode="" Description="Nur fuer eigene Zugangsdaten. Zahl nach /drive/ in der kDrive-Adresse. Leer lassen, wenn die rclone-Datei verwendet wird." Type="Variable" Display="always" Required="false" Mask="false"></Config>
@@ -48,4 +49,5 @@ Updates: Docker - infomaniak-sync - Force Update. Neue Felder nur mit Edit - App
   <Config Name="TZ" Target="TZ" Default="Europe/Zurich" Mode="" Description="Zeitzone fuer die Zeitplaene" Type="Variable" Display="advanced" Required="false" Mask="false">Europe/Zurich</Config>
   <Config Name="PORT" Target="PORT" Default="8794" Mode="" Description="Interner Port (meist unveraendert lassen)" Type="Variable" Display="advanced" Required="false" Mask="false">8794</Config>
   <Config Name="SHARES_ROOT" Target="SHARES_ROOT" Default="/shares" Mode="" Description="Pfad im Container zum Shares-Volume" Type="Variable" Display="advanced" Required="false" Mask="false">/shares</Config>
+  <Config Name="SYNOLOGY_ROOT" Target="SYNOLOGY_ROOT" Default="/synology" Mode="" Description="Pfad im Container zum Synology-Volume" Type="Variable" Display="advanced" Required="false" Mask="false">/synology</Config>
 </Container>

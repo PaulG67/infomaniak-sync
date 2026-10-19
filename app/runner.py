@@ -20,9 +20,10 @@ log = logging.getLogger("app.runner")
 
 
 class Runner:
-    def __init__(self, store: Store, shares_root: Path, tz: ZoneInfo):
+    def __init__(self, store: Store, shares_root: Path, tz: ZoneInfo, synology_root: Path | None = None):
         self.store = store
         self.shares_root = shares_root
+        self.synology_root = synology_root
         self.tz = tz
         self._procs: dict[str, subprocess.Popen] = {}
         self._cancel: set[str] = set()
@@ -62,7 +63,12 @@ class Runner:
         effective_resync = resync or (dry_run and engine.needs_resync(job))
         if engine.needs_resync(job) and not dry_run and not resync:
             raise ValueError("Beidseitig braucht zuerst einen Erstabgleich")
-        self.store.require_backend()
+        if job.get("kdrive_enabled", True):
+            self.store.require_backend()
+        if job.get("synology_enabled") and (self.synology_root is None or not self.synology_root.is_dir()):
+            raise ValueError(
+                "Synology-Laufwerk ist nicht eingebunden. Im Unraid-Template den Pfad Synology setzen."
+            )
         now = datetime.now(self.tz)
         run_id = str(uuid.uuid4())
         log_path = self.store.config_dir / "logs" / f"{run_id}.log"
@@ -166,18 +172,30 @@ class Runner:
             if job["existing"] == "version" or (job["mode"] == "bisync" and resync):
                 slug = engine.slugify(job["name"], job["id"])
                 (self.store.config_dir / "versions" / slug / stamp).mkdir(parents=True, exist_ok=True)
-            backend = self.store.require_backend()
-            commands = engine.build_commands(
+            if job.get("kdrive_enabled", True):
+                backend = self.store.require_backend()
+                remote_name = backend["remote"]
+                config_path = backend["config_path"]
+            else:
+                backend = self.store.backend()
+                remote_name = backend.get("remote") or "kdrive"
+                config_path = backend.get("config_path") or self.store.conf_path
+                if not Path(config_path).is_file():
+                    config_path = self.store.config_dir / "rclone-local.conf"
+                    if not config_path.is_file():
+                        config_path.write_text("# local only\n", encoding="utf-8")
+            steps = engine.build_commands(
                 job,
                 shares_root=self.shares_root,
-                config_path=backend["config_path"],
+                config_path=Path(config_path),
                 filter_path=filter_path,
                 workdir_base=self.store.config_dir / "bisync",
                 version_root=self.store.config_dir / "versions",
                 dry_run=dry_run,
                 resync=resync,
                 stamp=stamp,
-                remote_name=backend["remote"],
+                remote_name=remote_name,
+                synology_root=self.synology_root,
             )
             with log_path.open("w", encoding="utf-8") as handle:
                 handle.write(f"# {job['name']}\n")
@@ -186,28 +204,15 @@ class Runner:
                     handle.write("# Probelauf, es wird nichts verändert\n")
                 if resync:
                     handle.write("# Erstabgleich (rclone resync). Überschriebene Fassungen landen im Versionsordner.\n")
-                for argv in commands:
-                    handle.write("# " + engine.format_command(argv) + "\n")
+                for step in steps:
+                    handle.write(f"# [{step['target']}] " + engine.format_command(step["argv"]) + "\n")
                 handle.write("\n")
             env = self.store.rclone_env()
-            for index, argv in enumerate(commands):
+            for index, step in enumerate(steps):
+                argv = list(step["argv"])
                 if dry_run:
-                    mapping = job["mappings"][index] if index < len(job.get("mappings") or []) else {}
-                    if job["mode"] == "bisync":
-                        way = "both"
-                    elif job["mode"] in {"upload", "mirror_up"}:
-                        way = "up"
-                    else:
-                        way = "down"
-                    marker = {
-                        "local": mapping.get("local") or "",
-                        "remote": mapping.get("remote") or "",
-                        "dir": way,
-                        "version": job.get("existing") == "version" or (job["mode"] == "bisync" and resync),
-                        "deletes": job["mode"] in {"mirror_up", "mirror_down"},
-                    }
                     with log_path.open("a", encoding="utf-8") as handle:
-                        handle.write("# PLAN " + json.dumps(marker, ensure_ascii=False) + "\n")
+                        handle.write("# PLAN " + json.dumps(step["plan"], ensure_ascii=False) + "\n")
                 combined_path = None
                 if dry_run and job["mode"] != "bisync":
                     combined_path = log_path.with_name(f"{log_path.stem}-{index}.combined")
@@ -224,7 +229,7 @@ class Runner:
                 if code != 0:
                     status = "error"
                     break
-            if status == "ok" and resync and not dry_run:
+            if status == "ok" and resync and not dry_run and job.get("kdrive_enabled", True):
                 pairs = {(m["local"], m["remote"]) for m in job["mappings"]}
 
                 def mark(item, _pairs=pairs):
@@ -237,8 +242,8 @@ class Runner:
                             mapping["bisync_ready"] = True
 
                 self.store.update_job(job["id"], mark)
-            if status == "ok" and not dry_run and int(job.get("version_keep_days") or 0) > 0:
-                self._prune(job, log_path, env, backend)
+            if status == "ok" and not dry_run and int(job.get("version_keep_days") or 0) > 0 and job.get("kdrive_enabled", True):
+                self._prune(job, log_path, env, backend if isinstance(backend, dict) else self.store.backend())
             log_text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
             if status == "cancelled":
                 summary = summary or "abgebrochen"

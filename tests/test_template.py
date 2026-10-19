@@ -10,8 +10,11 @@ def test_unraid_template_has_required_fields():
     assert tree.findtext("Repository") == "ghcr.io/paulg67/infomaniak-sync:latest"
     assert tree.findtext("Name") == "infomaniak-sync"
     names = [node.attrib.get("Name") for node in tree.findall("Config")]
-    for required in ("Shares", "Config", "rclone-Konfiguration", "rclone-Remote", "kDrive-ID", "kDrive-Benutzer", "kDrive-Passwort", "WebUI Port"):
+    for required in ("Shares", "Config", "Synology", "rclone-Konfiguration", "rclone-Remote", "kDrive-ID", "kDrive-Benutzer", "kDrive-Passwort", "WebUI Port"):
         assert required in names
+    synology = next(node for node in tree.findall("Config") if node.attrib.get("Name") == "Synology")
+    assert synology.attrib.get("Target") == "/synology"
+    assert synology.text == "/mnt/remotes"
     rclone = next(node for node in tree.findall("Config") if node.attrib.get("Name") == "rclone-Konfiguration")
     assert rclone.attrib.get("Target") == "/rclone/rclone.conf"
     assert rclone.attrib.get("Mode") == "ro"

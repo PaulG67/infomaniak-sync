@@ -68,6 +68,8 @@ SYSTEM_PATTERNS = (
 HOST_SHARES = "/mnt/user"
 HOST_CONFIG = "/mnt/user/appdata/infomaniak-sync"
 HOST_RCLONE_CONFIG = "/boot/config/plugins/rclone/.rclone.conf"
+HOST_SYNOLOGY = "/mnt/remotes"
+SYNOLOGY_EXAMPLE = "/mnt/remotes"
 
 DURATION = re.compile(r"^(\d+(\.\d+)?(ns|us|ms|s|m|h|d|w|M|y))+$")
 SIZE = re.compile(r"^\d+(\.\d+)?([KkMmGgTtPpEe]i?)?[Bb]?$")
@@ -82,7 +84,9 @@ def blank_job() -> dict:
     return {
         "name": "",
         "enabled": True,
-        "mappings": [{"local": "", "remote": ""}],
+        "kdrive_enabled": True,
+        "synology_enabled": False,
+        "mappings": [{"local": "", "remote": "", "synology": ""}],
         "mode": "upload",
         "existing": "newer",
         "conflict": "newer",
@@ -146,18 +150,22 @@ def clean_rel(value, *, label: str) -> str:
     return "/".join(parts)
 
 
-def local_path(shares_root: Path, rel: str) -> Path:
-    root = shares_root.resolve()
-    target = root if not rel else (root / rel).resolve()
+def under_root(root: Path, rel: str, *, label: str = "Ordner", must_exist: bool = True) -> Path:
+    base = root.resolve()
+    target = base if not rel else (base / rel).resolve()
     try:
-        if target != root:
-            target.relative_to(root)
+        if target != base:
+            target.relative_to(base)
     except ValueError as exc:
-        raise ValueError("Ordner liegt ausserhalb der Shares") from exc
-    if not target.is_dir():
+        raise ValueError(f"{label} liegt ausserhalb des erlaubten Pfads") from exc
+    if must_exist and not target.is_dir():
         shown = rel or "/"
-        raise ValueError(f"Ordner nicht gefunden: {shown}")
+        raise ValueError(f"{label} nicht gefunden: {shown}")
     return target
+
+
+def local_path(shares_root: Path, rel: str) -> Path:
+    return under_root(shares_root, rel, label="Unraid-Ordner", must_exist=True)
 
 
 def webdav_url(drive_id: str) -> str:
@@ -481,6 +489,7 @@ def prepare_job(
     now: datetime,
     tz: ZoneInfo,
     relax_confirm: bool = False,
+    synology_root: Path | None = None,
 ) -> dict:
     if not isinstance(raw, dict):
         raise ValueError("Ungültige Daten")
@@ -489,9 +498,27 @@ def prepare_job(
         raise ValueError("Name fehlt")
     if len(name) > 80 or any(ord(ch) < 32 for ch in name):
         raise ValueError("Name ist ungültig")
+    if "kdrive_enabled" in raw:
+        kdrive_enabled = as_bool(raw.get("kdrive_enabled"), True)
+    else:
+        kdrive_enabled = as_bool((old or {}).get("kdrive_enabled"), True)
+    if "synology_enabled" in raw:
+        synology_enabled = as_bool(raw.get("synology_enabled"), False)
+    else:
+        synology_enabled = as_bool((old or {}).get("synology_enabled"), False)
+    if not kdrive_enabled and not synology_enabled:
+        raise ValueError("Mindestens Infomaniak oder Synology muss aktiv sein")
     mode = str(raw.get("mode") or "upload")
     if mode not in MODES:
         raise ValueError("Synchronisationsart ungültig")
+    if synology_enabled and mode == "bisync":
+        raise ValueError("Beidseitiger Abgleich gilt nur für Infomaniak. Synology deaktivieren oder eine andere Art wählen.")
+    if synology_enabled:
+        if synology_root is None or not synology_root.is_dir():
+            raise ValueError(
+                "Synology-Laufwerk ist nicht eingebunden. Im Unraid-Template den Pfad Synology setzen, "
+                f"zum Beispiel {SYNOLOGY_EXAMPLE}."
+            )
     existing = str(raw.get("existing") or "newer")
     if existing not in EXISTING:
         raise ValueError("Umgang mit vorhandenen Dateien ungültig")
@@ -543,18 +570,32 @@ def prepare_job(
         if not isinstance(item, dict):
             raise ValueError("Ordnerpaar ungültig")
         local = clean_rel(item.get("local"), label="Unraid-Ordner")
-        remote = clean_rel(item.get("remote"), label="kDrive-Ordner")
+        remote = clean_rel(item.get("remote"), label="kDrive-Ordner") if kdrive_enabled else ""
+        synology = clean_rel(item.get("synology"), label="Synology-Ordner") if synology_enabled else ""
         if local in seen:
             raise ValueError(f"Unraid-Ordner doppelt: {local or '/'}")
         seen.add(local)
         if local == "" and not confirm_root and not relax_confirm:
             raise ValueError("Bestätige, dass der gesamte gemountete Inhalt synchronisiert werden soll.")
         local_path(shares_root, local)
-        mappings.append({"local": local, "remote": remote, "bisync_ready": False})
+        if kdrive_enabled and remote == "" and not relax_confirm and mode in {"download", "mirror_down", "bisync"}:
+            # leerer Remote-Pfad = Wurzel ist erlaubt
+            pass
+        if synology_enabled and synology_root is not None:
+            dest_must_exist = mode in {"download", "mirror_down"}
+            under_root(synology_root, synology, label="Synology-Ordner", must_exist=dest_must_exist)
+        mappings.append(
+            {
+                "local": local,
+                "remote": remote,
+                "synology": synology,
+                "bisync_ready": False,
+            }
+        )
     if mode in MIRROR_MODES and not as_bool(raw.get("confirm_delete")) and not relax_confirm:
         if mode == "mirror_down":
-            raise ValueError("Bestätige das Löschen lokaler Dateien, die auf kDrive fehlen.")
-        raise ValueError("Bestätige das Löschen von kDrive-Dateien, die lokal fehlen.")
+            raise ValueError("Bestätige das Löschen lokaler Dateien, die auf dem Ziel fehlen.")
+        raise ValueError("Bestätige das Löschen von Zieldateien, die lokal fehlen.")
     job_id = str((old or {}).get("id") or "")
     if not re.fullmatch(r"[0-9a-f-]{36}", job_id):
         job_id = str(uuid.uuid4())
@@ -562,6 +603,8 @@ def prepare_job(
         "id": job_id,
         "name": name,
         "enabled": as_bool(raw.get("enabled"), True),
+        "kdrive_enabled": kdrive_enabled,
+        "synology_enabled": synology_enabled,
         "mappings": mappings,
         "mode": mode,
         "existing": existing,
@@ -594,9 +637,14 @@ def prepare_job(
     job["option_signature"] = option_signature(job)
     prefix = backup_prefix(job)
     for mapping in job["mappings"]:
-        if job["existing"] == "version" and _overlaps(mapping["remote"], prefix):
+        if kdrive_enabled and job["existing"] == "version" and _overlaps(mapping["remote"], prefix):
             raise ValueError(
                 "Der Versionsordner liegt im synchronisierten kDrive-Ordner. "
+                "Wähle einen Ordner daneben, zum Beispiel _Versionen."
+            )
+        if synology_enabled and job["existing"] == "version" and _overlaps(mapping["synology"], prefix):
+            raise ValueError(
+                "Der Versionsordner liegt im synchronisierten Synology-Ordner. "
                 "Wähle einen Ordner daneben, zum Beispiel _Versionen."
             )
     ready_by_pair: dict[tuple[str, str], bool] = {}
@@ -622,12 +670,23 @@ def schedule_block(job: dict) -> str:
 
 
 def describe(job: dict) -> str:
+    targets = []
+    if job.get("kdrive_enabled", True):
+        targets.append("Infomaniak")
+    if job.get("synology_enabled"):
+        targets.append("Synology")
     pairs = []
     for mapping in job["mappings"]:
         src = "der gesamte gemountete Inhalt" if not mapping["local"] else mapping["local"]
-        dst = "die oberste kDrive-Ebene" if not mapping["remote"] else mapping["remote"]
-        pairs.append(f"{src} → {dst}")
-    parts = [MODE_TEXT[job["mode"]], ]
+        ends = []
+        if job.get("kdrive_enabled", True):
+            ends.append("kDrive:" + (mapping["remote"] or "/"))
+        if job.get("synology_enabled"):
+            ends.append("Synology:" + (mapping.get("synology") or "/"))
+        pairs.append(f"{src} → {' und '.join(ends)}")
+    parts = [MODE_TEXT[job["mode"]]]
+    if targets:
+        parts.append("Ziele: " + ", ".join(targets) + ".")
     if job["mode"] == "bisync":
         parts.append(CONFLICT_TEXT[job["conflict"]])
     else:
@@ -667,6 +726,45 @@ def config_exclude(config_dir: Path, shares_root: Path) -> str | None:
     return rel
 
 
+def _common_flags(job: dict, *, config_path: Path, dry_run: bool) -> list[str]:
+    argv = [
+        "--config",
+        str(config_path),
+        "--transfers",
+        str(job["transfers"]),
+        "--checkers",
+        str(max(8, int(job["transfers"]))),
+        "--retries",
+        "5",
+        "--retries-sleep",
+        "10s",
+        "--low-level-retries",
+        "10",
+        "--timeout",
+        "10m",
+        "--contimeout",
+        "60s",
+        "--stats",
+        "15s",
+        "--stats-log-level",
+        "NOTICE",
+        "--log-level",
+        "DEBUG" if dry_run else ("INFO" if job.get("verbose") else "NOTICE"),
+    ]
+    if job.get("create_empty_dirs"):
+        argv.append("--create-empty-src-dirs")
+    argv.append("--copy-links" if job.get("copy_links") else "--skip-links")
+    if job.get("min_age"):
+        argv.extend(["--min-age", job["min_age"]])
+    if job.get("max_size"):
+        argv.extend(["--max-size", job["max_size"]])
+    if job.get("bandwidth"):
+        argv.extend(["--bwlimit", job["bandwidth"]])
+    if dry_run:
+        argv.extend(["--dry-run", "--use-json-log"])
+    return argv
+
+
 def build_commands(
     job: dict,
     *,
@@ -679,86 +777,165 @@ def build_commands(
     resync: bool = False,
     stamp: str,
     remote_name: str = "kdrive",
-) -> list[list[str]]:
-    commands = []
+    synology_root: Path | None = None,
+) -> list[dict]:
+    """Liefert Schritte mit argv und Probelauf-Marker. Ziele: kdrive und/oder synology."""
+    steps: list[dict] = []
     slug = slugify(job["name"], job["id"])
+    kdrive_on = job.get("kdrive_enabled", True)
+    synology_on = bool(job.get("synology_enabled"))
+    if synology_on and (synology_root is None or not Path(synology_root).is_dir()):
+        raise ValueError(
+            "Synology-Laufwerk ist nicht eingebunden. Im Unraid-Template den Pfad Synology setzen, "
+            f"zum Beispiel {SYNOLOGY_EXAMPLE}."
+        )
     for index, mapping in enumerate(job["mappings"]):
         local = local_path(shares_root, mapping["local"])
-        remote = mapping["remote"]
-        src_is_local = job["mode"] in {"upload", "mirror_up", "bisync"}
         local_s = str(local)
-        remote_s = remote_spec(remote_name, remote)
+        src_is_local = job["mode"] in {"upload", "mirror_up", "bisync"}
         if job["mode"] == "bisync":
-            argv = ["rclone", "bisync", local_s, remote_s]
-        elif src_is_local:
-            op = "copy" if job["mode"] == "upload" else "sync"
-            argv = ["rclone", op, local_s, remote_s]
+            way = "both"
+        elif job["mode"] in {"upload", "mirror_up"}:
+            way = "up"
         else:
-            op = "copy" if job["mode"] == "download" else "sync"
-            argv = ["rclone", op, remote_s, local_s]
-        argv.extend(
-            [
-                "--config",
-                str(config_path),
-                "--transfers",
-                str(job["transfers"]),
-                "--checkers",
-                str(max(8, int(job["transfers"]))),
-                "--retries",
-                "5",
-                "--retries-sleep",
-                "10s",
-                "--low-level-retries",
-                "10",
-                "--timeout",
-                "10m",
-                "--contimeout",
-                "60s",
-                "--stats",
-                "15s",
-                "--stats-log-level",
-                "NOTICE",
-                "--log-level",
-                "DEBUG" if dry_run else ("INFO" if job.get("verbose") else "NOTICE"),
-            ]
-        )
-        if job["mode"] == "bisync":
-            digest = hashlib.sha1(f"{mapping['local']}\n{mapping['remote']}".encode()).hexdigest()[:12]
-            argv.extend(
-                [
-                    "--workdir",
-                    str(workdir_base / job["id"] / digest),
-                    "--filters-file",
-                    str(filter_path),
-                    "--resilient",
-                    "--recover",
-                    "--max-delete",
-                    str(job["max_delete"]),
-                    "--conflict-loser",
-                    "pathname",
-                    "--conflict-suffix",
-                    "unraid,kdrive",
-                ]
-            )
-            if job["conflict"] == "both":
-                argv.extend(["--conflict-resolve", "none"])
+            way = "down"
+        use_backup = job["existing"] == "version" or (job["mode"] == "bisync" and resync)
+        leaf = f"{stamp}-{index}"
+        local_backup = version_root / slug / stamp / str(index)
+
+        if kdrive_on:
+            remote = mapping["remote"]
+            remote_s = remote_spec(remote_name, remote)
+            if job["mode"] == "bisync":
+                argv = ["rclone", "bisync", local_s, remote_s]
+            elif src_is_local:
+                op = "copy" if job["mode"] == "upload" else "sync"
+                argv = ["rclone", op, local_s, remote_s]
             else:
-                resolved = {"newer": "newer", "larger": "larger", "local": "path1", "remote": "path2"}[
-                    job["conflict"]
+                op = "copy" if job["mode"] == "download" else "sync"
+                argv = ["rclone", op, remote_s, local_s]
+            argv.extend(_common_flags(job, config_path=config_path, dry_run=dry_run))
+            if job["mode"] == "bisync":
+                digest = hashlib.sha1(f"{mapping['local']}\n{mapping['remote']}".encode()).hexdigest()[:12]
+                argv.extend(
+                    [
+                        "--workdir",
+                        str(workdir_base / job["id"] / digest),
+                        "--filters-file",
+                        str(filter_path),
+                        "--resilient",
+                        "--recover",
+                        "--max-delete",
+                        str(job["max_delete"]),
+                        "--conflict-loser",
+                        "pathname",
+                        "--conflict-suffix",
+                        "unraid,kdrive",
+                    ]
+                )
+                if job["conflict"] == "both":
+                    argv.extend(["--conflict-resolve", "none"])
+                else:
+                    resolved = {"newer": "newer", "larger": "larger", "local": "path1", "remote": "path2"}[
+                        job["conflict"]
+                    ]
+                    argv.extend(["--conflict-resolve", resolved])
+                compare = {"modtime": "size,modtime", "checksum": "size,modtime,checksum", "size": "size"}[
+                    job["compare"]
                 ]
-                argv.extend(["--conflict-resolve", resolved])
-            compare = {"modtime": "size,modtime", "checksum": "size,modtime,checksum", "size": "size"}[job["compare"]]
-            argv.extend(["--compare", compare])
-            if resync:
-                resync_mode = {
-                    "newer": "newer",
-                    "larger": "larger",
-                    "local": "path1",
-                    "remote": "path2",
-                    "both": "newer",
-                }[job["conflict"]]
-                argv.extend(["--resync-mode", resync_mode])
-        else:
+                argv.extend(["--compare", compare])
+                if resync:
+                    resync_mode = {
+                        "newer": "newer",
+                        "larger": "larger",
+                        "local": "path1",
+                        "remote": "path2",
+                        "both": "newer",
+                    }[job["conflict"]]
+                    argv.extend(["--resync-mode", resync_mode])
+            else:
+                argv.extend(["--filter-from", str(filter_path)])
+                if job["existing"] == "newer":
+                    argv.append("--update")
+                elif job["existing"] == "skip":
+                    argv.append("--ignore-existing")
+                if job["compare"] == "checksum" and job["existing"] != "newer":
+                    argv.append("--checksum")
+                elif job["compare"] == "size" and job["existing"] != "newer":
+                    argv.append("--size-only")
+                if job["mode"] in MIRROR_MODES:
+                    if job.get("track_renames"):
+                        argv.extend(["--track-renames", "--delete-after"])
+                    else:
+                        argv.append(
+                            {
+                                "after": "--delete-after",
+                                "during": "--delete-during",
+                                "before": "--delete-before",
+                            }[job["delete_mode"]]
+                        )
+            if use_backup:
+                remote_backup = f"{job['version_dir'].strip('/')}/{slug}/{stamp}/{index}"
+                if job["mode"] == "bisync":
+                    argv.extend(
+                        [
+                            "--backup-dir1",
+                            str(local_backup),
+                            "--backup-dir2",
+                            remote_spec(remote_name, remote_backup),
+                            "--suffix",
+                            leaf,
+                            "--suffix-keep-extension",
+                        ]
+                    )
+                elif job["mode"] in {"upload", "mirror_up"}:
+                    argv.extend(
+                        [
+                            "--backup-dir",
+                            remote_spec(remote_name, remote_backup),
+                            "--suffix",
+                            leaf,
+                            "--suffix-keep-extension",
+                        ]
+                    )
+                else:
+                    argv.extend(
+                        ["--backup-dir", str(local_backup), "--suffix", leaf, "--suffix-keep-extension"]
+                    )
+            # dry-run flags already in _common_flags; remove duplicate if bisync path added them via _common
+            steps.append(
+                {
+                    "target": "kdrive",
+                    "argv": argv,
+                    "plan": {
+                        "local": mapping.get("local") or "",
+                        "remote": mapping.get("remote") or "",
+                        "dir": way,
+                        "version": use_backup,
+                        "deletes": job["mode"] in {"mirror_up", "mirror_down"},
+                        "target": "kdrive",
+                    },
+                }
+            )
+
+        if synology_on:
+            assert synology_root is not None
+            syn_rel = mapping.get("synology") or ""
+            syn_path = under_root(
+                synology_root,
+                syn_rel,
+                label="Synology-Ordner",
+                must_exist=job["mode"] in {"download", "mirror_down"},
+            )
+            if job["mode"] in {"upload", "mirror_up"} and not syn_path.exists() and not dry_run:
+                syn_path.mkdir(parents=True, exist_ok=True)
+            syn_s = str(syn_path)
+            op = "copy" if job["mode"] in {"upload", "download"} else "sync"
+            if src_is_local:
+                argv = ["rclone", op, local_s, syn_s]
+            else:
+                argv = ["rclone", op, syn_s, local_s]
+            argv.extend(_common_flags(job, config_path=config_path, dry_run=dry_run))
             argv.extend(["--filter-from", str(filter_path)])
             if job["existing"] == "newer":
                 argv.append("--update")
@@ -773,46 +950,49 @@ def build_commands(
                     argv.extend(["--track-renames", "--delete-after"])
                 else:
                     argv.append(
-                        {"after": "--delete-after", "during": "--delete-during", "before": "--delete-before"}[
-                            job["delete_mode"]
-                        ]
+                        {
+                            "after": "--delete-after",
+                            "during": "--delete-during",
+                            "before": "--delete-before",
+                        }[job["delete_mode"]]
                     )
-        if job.get("create_empty_dirs"):
-            argv.append("--create-empty-src-dirs")
-        argv.append("--copy-links" if job.get("copy_links") else "--skip-links")
-        if job.get("min_age"):
-            argv.extend(["--min-age", job["min_age"]])
-        if job.get("max_size"):
-            argv.extend(["--max-size", job["max_size"]])
-        if job.get("bandwidth"):
-            argv.extend(["--bwlimit", job["bandwidth"]])
-        use_backup = job["existing"] == "version" or (job["mode"] == "bisync" and resync)
-        if use_backup:
-            leaf = f"{stamp}-{index}"
-            local_backup = version_root / slug / stamp / str(index)
-            remote_backup = f"{job['version_dir'].strip('/')}/{slug}/{stamp}/{index}"
-            if job["mode"] == "bisync":
-                argv.extend(
-                    [
-                        "--backup-dir1",
-                        str(local_backup),
-                        "--backup-dir2",
-                        remote_spec(remote_name, remote_backup),
-                        "--suffix",
-                        leaf,
-                        "--suffix-keep-extension",
-                    ]
+            if use_backup:
+                syn_backup = under_root(
+                    synology_root,
+                    f"{job['version_dir'].strip('/')}/{slug}/{stamp}/{index}",
+                    label="Synology-Versionsordner",
+                    must_exist=False,
                 )
-            elif job["mode"] in {"upload", "mirror_up"}:
-                argv.extend(
-                    ["--backup-dir", remote_spec(remote_name, remote_backup), "--suffix", leaf, "--suffix-keep-extension"]
-                )
-            else:
-                argv.extend(["--backup-dir", str(local_backup), "--suffix", leaf, "--suffix-keep-extension"])
-        if dry_run:
-            argv.extend(["--dry-run", "--use-json-log"])
-        commands.append(argv)
-    return commands
+                if job["mode"] in {"upload", "mirror_up"}:
+                    syn_backup.mkdir(parents=True, exist_ok=True)
+                    argv.extend(
+                        ["--backup-dir", str(syn_backup), "--suffix", leaf, "--suffix-keep-extension"]
+                    )
+                else:
+                    argv.extend(
+                        ["--backup-dir", str(local_backup), "--suffix", leaf, "--suffix-keep-extension"]
+                    )
+            steps.append(
+                {
+                    "target": "synology",
+                    "argv": argv,
+                    "plan": {
+                        "local": mapping.get("local") or "",
+                        "remote": syn_rel,
+                        "dir": way,
+                        "version": use_backup,
+                        "deletes": job["mode"] in {"mirror_up", "mirror_down"},
+                        "target": "synology",
+                    },
+                }
+            )
+    if not steps:
+        raise ValueError("Kein aktives Ziel für diesen Auftrag")
+    return steps
+
+
+def command_argvs(steps: list[dict]) -> list[list[str]]:
+    return [step["argv"] for step in steps]
 
 
 def format_command(argv: list[str]) -> str:
@@ -840,16 +1020,23 @@ def _quote_var(var: str, rest: str) -> str:
     return f'"{var}/{safe}"'
 
 
-def _shell_word(token: str, *, filter_path: str, config_path: str, shares_root: str, config_dir: str) -> str:
+def _shell_word(
+    token: str,
+    *,
+    filter_path: str,
+    config_path: str,
+    shares_root: str,
+    config_dir: str,
+    synology_root: str = "",
+) -> str:
     if token == filter_path:
         return '"$FILTER"'
     if token == config_path:
         return '"$RCLONE_CONFIG"'
-    pairs = sorted(
-        ((shares_root, "${SHARES}"), (config_dir, "${CONFIG_DIR}")),
-        key=lambda item: len(item[0]),
-        reverse=True,
-    )
+    pairs = [(shares_root, "${SHARES}"), (config_dir, "${CONFIG_DIR}")]
+    if synology_root:
+        pairs.append((synology_root, "${SYNOLOGY}"))
+    pairs = sorted(pairs, key=lambda item: len(item[0]), reverse=True)
     for root, var in pairs:
         rest = _prefix_rest(token, root)
         if rest is not None:
@@ -867,14 +1054,17 @@ def host_sync_script(
     host_shares: str = HOST_SHARES,
     host_config: str = HOST_CONFIG,
     host_rclone_config: str = HOST_RCLONE_CONFIG,
+    synology_root: Path | None = None,
+    host_synology: str = HOST_SYNOLOGY,
 ) -> tuple[str, str]:
-    """Shell-Skript für Unraid User Scripts. Nutzt rclone, weil kDrive WebDAV spricht."""
+    """Shell-Skript für Unraid User Scripts. Nutzt rclone für kDrive und/oder Synology."""
     filters = render_filters(job, extra_excludes)
     config_base = config_dir.resolve()
     shares_base = shares_root.resolve()
+    syn_base = synology_root.resolve() if synology_root and synology_root.is_dir() else None
     filter_path = config_base / "filters" / f"{job['id']}.txt"
     config_path = config_base / "rclone-active.conf"
-    commands = build_commands(
+    steps = build_commands(
         job,
         shares_root=shares_base,
         config_path=config_path,
@@ -885,9 +1075,10 @@ def host_sync_script(
         resync=False,
         stamp="lauf",
         remote_name=remote_name,
+        synology_root=syn_base,
     )
     rendered = []
-    for argv in commands:
+    for step in steps:
         words = [
             _shell_word(
                 part,
@@ -895,8 +1086,9 @@ def host_sync_script(
                 config_path=str(config_path),
                 shares_root=str(shares_base),
                 config_dir=str(config_base),
+                synology_root=str(syn_base) if syn_base else "",
             )
-            for part in argv
+            for part in step["argv"]
         ]
         rendered.append(" ".join(words))
     delim = "INFOMANIAK_FILTER"
@@ -904,32 +1096,44 @@ def host_sync_script(
         delim += "X"
     name = " ".join(str(job.get("name") or "Auftrag").split()) or "Auftrag"
     body = filters if filters.endswith("\n") or not filters else filters + "\n"
-    script = (
-        "#!/bin/bash\n"
-        f"# Sync-Skript für den Auftrag {name}\n"
-        "# In Unraid User Scripts einfügen. kDrive wird mit rclone über WebDAV erreicht.\n"
-        "# Pfade entsprechen dem Unraid-Template und können hier angepasst werden.\n"
-        "set -euo pipefail\n"
-        f"SHARES={shlex.quote(host_shares)}\n"
-        f"CONFIG_DIR={shlex.quote(host_config)}\n"
-        f"RCLONE_CONFIG={shlex.quote(host_rclone_config)}\n"
-        'if [[ ! -f "$RCLONE_CONFIG" ]]; then\n'
-        '  echo "rclone-Konfiguration fehlt: $RCLONE_CONFIG" >&2\n'
-        "  exit 1\n"
-        "fi\n"
-        "if ! command -v rclone >/dev/null 2>&1; then\n"
-        '  echo "rclone ist auf diesem System nicht vorhanden" >&2\n'
-        "  exit 1\n"
-        "fi\n"
-        'FILTER="$(mktemp)"\n'
-        "trap 'rm -f \"$FILTER\"' EXIT\n"
-        f"cat > \"$FILTER\" << '{delim}'\n"
-        f"{body}"
-        f"{delim}\n"
-        + "\n".join(rendered)
-        + "\n"
+    needs_rclone_conf = job.get("kdrive_enabled", True)
+    lines = [
+        "#!/bin/bash",
+        f"# Sync-Skript für den Auftrag {name}",
+        "# In Unraid User Scripts einfügen.",
+        "# Pfade entsprechen dem Unraid-Template und können hier angepasst werden.",
+        "set -euo pipefail",
+        f"SHARES={shlex.quote(host_shares)}",
+        f"CONFIG_DIR={shlex.quote(host_config)}",
+        f"RCLONE_CONFIG={shlex.quote(host_rclone_config)}",
+    ]
+    if job.get("synology_enabled"):
+        lines.append(f"SYNOLOGY={shlex.quote(host_synology)}")
+    if needs_rclone_conf:
+        lines.extend(
+            [
+                'if [[ ! -f "$RCLONE_CONFIG" ]]; then',
+                '  echo "rclone-Konfiguration fehlt: $RCLONE_CONFIG" >&2',
+                "  exit 1",
+                "fi",
+            ]
+        )
+    lines.extend(
+        [
+            "if ! command -v rclone >/dev/null 2>&1; then",
+            '  echo "rclone ist auf diesem System nicht vorhanden" >&2',
+            "  exit 1",
+            "fi",
+            'FILTER="$(mktemp)"',
+            "trap 'rm -f \"$FILTER\"' EXIT",
+            f"cat > \"$FILTER\" << '{delim}'",
+            body.rstrip("\n"),
+            delim,
+            *rendered,
+            "",
+        ]
     )
-    return f"{slugify(job['name'], job['id'])}.sh", script
+    return f"{slugify(job['name'], job['id'])}.sh", "\n".join(lines)
 
 
 def _join_root(root: str, rel: str) -> str:
@@ -940,8 +1144,13 @@ def _join_root(root: str, rel: str) -> str:
     return f"{root}/{rel}" if root else rel
 
 
-def _dry_label(kind: str, direction: str, version: bool) -> str:
-    arrow = {"up": "Unraid → kDrive", "down": "kDrive → Unraid"}.get(direction, "beide Seiten")
+def _peer_name(target: str) -> str:
+    return "Synology" if target == "synology" else "kDrive"
+
+
+def _dry_label(kind: str, direction: str, version: bool, target: str = "kdrive") -> str:
+    peer = _peer_name(target)
+    arrow = {"up": f"Unraid → {peer}", "down": f"{peer} → Unraid"}.get(direction, "beide Seiten")
     if kind == "copy":
         return f"Kopieren · {arrow}"
     if kind == "overwrite":
@@ -952,7 +1161,7 @@ def _dry_label(kind: str, direction: str, version: bool) -> str:
     if kind == "time":
         return f"Zeitstempel · {arrow}"
     if kind == "delete" and direction == "remote":
-        return "Löschen auf kDrive"
+        return f"Löschen auf {peer}"
     if kind == "delete" and direction == "local":
         return "Löschen auf Unraid"
     if kind == "delete":
@@ -1037,11 +1246,12 @@ def _object_name(value) -> str:
 
 
 def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
-    """Dateiaktionen eines rclone-Probelaufs: Unraid, Vorgang, kDrive."""
+    """Dateiaktionen eines rclone-Probelaufs: Unraid, Vorgang, Ziel (kDrive/Synology)."""
     local_root = ""
     remote_root = ""
     direction = "up"
     version = False
+    target = "kdrive"
     phase: str | None = None
     delete_side: str | None = None
     missing: set[str] = set()
@@ -1063,7 +1273,7 @@ def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
         if not obj or is_oc_nodes(obj):
             return
         local, remote = _dry_paths(kind, way, local_root, remote_root, obj)
-        key = (local, remote, kind, way)
+        key = (target, local, remote, kind, way)
         if key in seen:
             return
         seen.add(key)
@@ -1076,7 +1286,9 @@ def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
                 "remote_state": remote_state,
                 "kind": kind,
                 "direction": way,
-                "label": label or _dry_label(kind, way, version),
+                "target": target,
+                "target_label": "Synology" if target == "synology" else "Infomaniak",
+                "label": label or _dry_label(kind, way, version, target),
             }
         )
 
@@ -1140,10 +1352,11 @@ def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
             if way == "both":
                 way = "up"
             label = None
+            peer = _peer_name(target)
             if kind == "copy" and way == "down":
-                label = "Neu auf kDrive · kopieren nach Unraid"
+                label = f"Neu auf {peer} · kopieren nach Unraid"
             elif kind == "copy" and way == "up":
-                label = "Neu auf Unraid · kopieren nach kDrive"
+                label = f"Neu auf Unraid · kopieren nach {peer}"
             add(kind, obj, way if way in {"up", "down"} else "up", label)
             return
         if "skipped delete" in low or "not deleting as --dry-run" in low:
@@ -1171,7 +1384,7 @@ def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
         dropped = rows[section_start:]
         del rows[section_start:]
         for row in dropped:
-            seen.discard((row["local"], row["remote"], row["kind"], row["direction"]))
+            seen.discard((row.get("target", "kdrive"), row["local"], row["remote"], row["kind"], row["direction"]))
 
     def apply_combined(symbol: str, obj: str) -> None:
         way = phase or direction
@@ -1193,7 +1406,7 @@ def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
             elif side == "local":
                 add("keep", obj, side, "Nur auf Unraid, wird nicht verändert")
             else:
-                add("keep", obj, side, "Nur auf kDrive, wird nicht verändert")
+                add("keep", obj, side, f"Nur auf {_peer_name(target)}, wird nicht verändert")
         elif symbol == "!":
             add("error", obj, way)
 
@@ -1214,6 +1427,9 @@ def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
             direction = str(marker.get("dir") or "up")
             version = bool(marker.get("version"))
             deletes = bool(marker.get("deletes", True))
+            target = str(marker.get("target") or "kdrive")
+            if target not in {"kdrive", "synology"}:
+                target = "kdrive"
             phase = None
             delete_side = None
             missing.clear()
