@@ -293,9 +293,24 @@ def test_synology_and_kdrive_in_one_job(tmp_path):
     assert steps[1]["argv"][1] == "copy"
     assert str((syn / "Backup" / "Fotos").resolve()) in steps[1]["argv"]
     assert "SMB" in describe(job)
+    mixed = prepare_job(
+        payload(mode="bisync", synology_enabled=True, synology_share="nas_backup", confirm_delete=True),
+        old=None,
+        shares_root=root,
+        remotes_root=remotes,
+        now=NOW,
+        tz=TZ,
+    )
+    assert mixed["kdrive_mode"] == "bisync"
+    assert mixed["synology_mode"] == "upload"
     with pytest.raises(ValueError, match="Beidseitiger"):
         prepare_job(
-            payload(mode="bisync", synology_enabled=True, synology_share="nas_backup", confirm_delete=True),
+            payload(
+                synology_enabled=True,
+                synology_share="nas_backup",
+                synology_mode="bisync",
+                mappings=[{"local": "photos", "remote": "Fotos", "synology": "Backup"}],
+            ),
             old=None,
             shares_root=root,
             remotes_root=remotes,

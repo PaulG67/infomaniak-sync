@@ -187,12 +187,14 @@ function renderList() {
     const active = isActive(job.id);
     const status = active ? "running" : (job.last_status || "");
     const sources = job.mappings.map((item) => item.local || "/").join(", ");
+    const kdMode = job.kdrive_mode || job.mode || "upload";
+    const synMode = job.synology_mode || (job.mode === "bisync" ? "upload" : job.mode) || "upload";
     const kdriveChip = job.kdrive_enabled !== false
-      ? `<span class="target-chip on">Infomaniak</span>`
+      ? `<span class="target-chip on">Infomaniak · ${esc(MODE[kdMode] || kdMode)}</span>`
       : `<span class="target-chip off">Infomaniak aus</span>`;
     const smbLabel = job.synology_share ? `SMB · ${job.synology_share}` : "SMB";
     const smbChip = job.synology_enabled
-      ? `<span class="target-chip on">${esc(smbLabel)}</span>`
+      ? `<span class="target-chip on">${esc(smbLabel)} · ${esc(MODE[synMode] || synMode)}</span>`
       : `<span class="target-chip off">SMB aus</span>`;
     const pairs = job.mappings.map((item) => {
       const ends = [];
@@ -204,13 +206,14 @@ function renderList() {
       }
       return `${item.local || "/"} → ${ends.join(" · ") || "—"}`;
     }).join(", ");
+    const needsResync = job.kdrive_enabled !== false && kdMode === "bisync" && !job.bisync_ready;
     return `<article class="card job">
       <div class="split">
         <h2>${esc(job.name)}</h2>
         <span class="pill ${esc(status)}">${esc(status ? STATUS[status] || status : "bereit")}</span>
       </div>
       <div class="target-chips">${kdriveChip}${smbChip}</div>
-      <p class="meta">${esc(MODE[job.mode] || job.mode)} · Quelle: ${esc(sources || "—")} · ${esc(job.schedule_label)} · ${job.enabled ? "aktiv" : "pausiert"}<br>${esc(pairs)}</p>
+      <p class="meta">Quelle: ${esc(sources || "—")} · ${esc(job.schedule_label)} · ${job.enabled ? "aktiv" : "pausiert"}<br>${esc(pairs)}</p>
       <p class="meta">Nächster Lauf: ${esc(job.next_run ? fmtTime(job.next_run) : "—")}${job.schedule_block ? ` · ${esc(job.schedule_block)}` : ""}</p>
       ${job.last_summary ? `<p class="meta">${esc(job.last_summary)}</p>` : ""}
       <div class="row">
@@ -219,7 +222,7 @@ function renderList() {
           ? `<button type="button" data-act="stop" data-id="${esc(job.id)}">Stopp</button>`
           : `<button type="button" data-act="run" data-id="${esc(job.id)}">Jetzt</button>
              <button type="button" data-act="dry" data-id="${esc(job.id)}">Probelauf</button>`}
-        ${job.mode === "bisync" && !job.bisync_ready ? `<button type="button" data-act="resync" data-id="${esc(job.id)}">Erstabgleich</button>` : ""}
+        ${needsResync ? `<button type="button" data-act="resync" data-id="${esc(job.id)}">Erstabgleich</button>` : ""}
         <button type="button" data-act="toggle" data-id="${esc(job.id)}">${job.enabled ? "Zeitplan aus" : "Zeitplan an"}</button>
       </div>
       <div class="row">
@@ -287,6 +290,31 @@ function renderEdit(id) {
             </label>
           </div>
           <div class="target-body" data-target-body="kdrive">
+            <label>Art${fieldSelect("kdrive_mode", Object.entries(MODE), job.kdrive_mode || job.mode || "upload")}</label>
+            <div data-kdrive-existing>
+              <label>Vorhandene Dateien${fieldSelect("kdrive_existing", [
+                ["newer", "Nur neuere Quelle übernehmen"],
+                ["overwrite", "Abweichende überschreiben"],
+                ["skip", "Vorhandene überspringen"],
+                ["version", "Alte Fassung in den Versionsordner, dann überschreiben"],
+              ], job.kdrive_existing || job.existing || "newer")}</label>
+            </div>
+            <div data-kdrive-conflict>
+              <label>Konflikt${fieldSelect("kdrive_conflict", [
+                ["newer", "Neuere Datei gewinnt"],
+                ["larger", "Grössere Datei gewinnt"],
+                ["local", "Unraid gewinnt"],
+                ["remote", "kDrive gewinnt"],
+                ["both", "Beide Fassungen behalten"],
+              ], job.kdrive_conflict || job.conflict || "newer")}</label>
+            </div>
+            <div data-kdrive-keep-version>
+              <label class="inline check"><input type="checkbox" name="kdrive_keep_version" ${(job.kdrive_existing || job.existing) === "version" ? "checked" : ""} /> Ersetzte Dateien im Versionsordner behalten</label>
+            </div>
+            <div data-kdrive-confirm-delete>
+              <label class="inline check"><input type="checkbox" name="kdrive_confirm_delete" ${job.confirm_delete ? "checked" : ""} /> Löschungen für Infomaniak bestätigen</label>
+              <p class="hint" data-kdrive-delete-hint></p>
+            </div>
             <div id="kdrive-dests">${maps.map((item, index) => kdriveDestRow(item, index)).join("")}</div>
             <p class="hint">Zielordner darf anders heissen als die Quelle.</p>
           </div>
@@ -308,34 +336,25 @@ function renderEdit(id) {
               <option value="">Share wählen</option>
               ${shareOptions}
             </select></label>
+            <label>Art${fieldSelect("synology_mode", Object.entries(MODE).filter(([value]) => value !== "bisync"), job.synology_mode || (job.mode === "bisync" ? "upload" : job.mode) || "upload")}</label>
+            <label>Vorhandene Dateien${fieldSelect("synology_existing", [
+              ["newer", "Nur neuere Quelle übernehmen"],
+              ["overwrite", "Abweichende überschreiben"],
+              ["skip", "Vorhandene überspringen"],
+              ["version", "Alte Fassung in den Versionsordner, dann überschreiben"],
+            ], job.synology_existing || job.existing || "newer")}</label>
+            <div data-smb-confirm-delete>
+              <label class="inline check"><input type="checkbox" name="synology_confirm_delete" ${job.confirm_delete ? "checked" : ""} /> Löschungen für SMB bestätigen</label>
+              <p class="hint" data-smb-delete-hint></p>
+            </div>
             <div id="smb-dests">${maps.map((item, index) => smbDestRow(item, index)).join("")}</div>
             <p class="hint">${state.synology_ok ? "Share zuerst wählen, dann Ordner." : "Path Remotes fehlt noch (Host /mnt/remotes, Slave)."}</p>
           </div>
         </section>
       </div>
-      <p class="hint target-note">Mindestens ein Ziel muss aktiv sein. Quelle und Ziele werden beim Speichern verknüpft.</p>
+      <p class="hint target-note">Mindestens ein Ziel muss aktiv sein. Zeitplan gilt für beide Ziele gemeinsam.</p>
       <section class="card form">
-        <label>Art${fieldSelect("mode", Object.entries(MODE), job.mode)}</label>
-        <div id="existing-field"><label>Vorhandene Dateien${fieldSelect("existing", [
-          ["newer", "Nur neuere Quelle übernehmen"],
-          ["overwrite", "Abweichende überschreiben"],
-          ["skip", "Vorhandene überspringen"],
-          ["version", "Alte Fassung in den Versionsordner, dann überschreiben"],
-        ], job.existing)}</label></div>
-        <div id="conflict-field"><label>Konflikt${fieldSelect("conflict", [
-          ["newer", "Neuere Datei gewinnt"],
-          ["larger", "Grössere Datei gewinnt"],
-          ["local", "Unraid gewinnt"],
-          ["remote", "kDrive gewinnt"],
-          ["both", "Beide Fassungen behalten"],
-        ], job.conflict)}</label></div>
-        <div id="keep-version-field">
-          <label class="inline check"><input type="checkbox" name="keep_version" ${job.existing === "version" ? "checked" : ""} /> Ersetzte Dateien zusätzlich im Versionsordner behalten</label>
-        </div>
-        <div id="confirm-delete-field">
-          <label class="inline check"><input type="checkbox" name="confirm_delete" ${job.confirm_delete ? "checked" : ""} /> Ich bestätige Löschungen, die dieser Abgleich auslöst</label>
-          <p class="hint" id="delete-hint"></p>
-        </div>
+        <h2 class="panel-title">Zeitplan</h2>
         <label>Zeitplan${fieldSelect("schedule_type", [
           ["manual", "Nur manuell"],
           ["interval", "Intervall"],
@@ -449,24 +468,39 @@ function syncSourceLabels() {
   });
 }
 
+function isMirrorMode(mode) {
+  return mode === "mirror_up" || mode === "mirror_down";
+}
+
 function syncVisibility() {
   const form = document.getElementById("job-form");
   if (!form) return;
   const field = (name) => form.querySelector(`[name="${name}"]`);
-  const mode = field("mode").value;
-  const bisync = mode === "bisync";
-  const mirror = mode === "mirror_up" || mode === "mirror_down";
-  document.getElementById("existing-field").hidden = bisync;
-  document.getElementById("conflict-field").hidden = !bisync;
-  document.getElementById("keep-version-field").hidden = !bisync;
-  document.getElementById("confirm-delete-field").hidden = !mirror;
-  document.getElementById("mirror-extra").hidden = !mirror;
-  const hint = document.getElementById("delete-hint");
-  if (hint) {
-    hint.textContent = mode === "mirror_down"
-      ? "Dateien auf Unraid, die im gewählten kDrive-Ordner fehlen, werden gelöscht."
-      : "Dateien auf kDrive, die im gewählten Unraid-Ordner fehlen, werden gelöscht.";
+  const kdriveOn = field("kdrive_enabled").checked;
+  const synOn = field("synology_enabled").checked;
+  const kdMode = field("kdrive_mode")?.value || "upload";
+  const synMode = field("synology_mode")?.value || "upload";
+  const kdBisync = kdMode === "bisync";
+  const kdMirror = isMirrorMode(kdMode);
+  const synMirror = isMirrorMode(synMode);
+  form.querySelector("[data-kdrive-existing]")?.toggleAttribute("hidden", kdBisync);
+  form.querySelector("[data-kdrive-conflict]")?.toggleAttribute("hidden", !kdBisync);
+  form.querySelector("[data-kdrive-keep-version]")?.toggleAttribute("hidden", !kdBisync);
+  form.querySelector("[data-kdrive-confirm-delete]")?.toggleAttribute("hidden", !kdMirror);
+  form.querySelector("[data-smb-confirm-delete]")?.toggleAttribute("hidden", !synMirror);
+  const kdHint = form.querySelector("[data-kdrive-delete-hint]");
+  if (kdHint) {
+    kdHint.textContent = kdMode === "mirror_down"
+      ? "Dateien auf Unraid, die im kDrive-Ordner fehlen, werden gelöscht."
+      : "Dateien auf kDrive, die im Unraid-Ordner fehlen, werden gelöscht.";
   }
+  const synHint = form.querySelector("[data-smb-delete-hint]");
+  if (synHint) {
+    synHint.textContent = synMode === "mirror_down"
+      ? "Dateien auf Unraid, die im SMB-Ordner fehlen, werden gelöscht."
+      : "Dateien auf SMB, die im Unraid-Ordner fehlen, werden gelöscht.";
+  }
+  document.getElementById("mirror-extra").hidden = !(kdMirror || synMirror);
   const kind = field("schedule_type").value;
   document.getElementById("time-field").hidden = kind !== "daily" && kind !== "weekly";
   document.getElementById("weekday-field").hidden = kind !== "weekly";
@@ -474,8 +508,6 @@ function syncVisibility() {
   document.getElementById("cron-field").hidden = kind !== "cron";
   const root = [...form.querySelectorAll(".source-row [name=local]")].some((input) => input.value.trim() === "");
   document.getElementById("confirm-root-field").hidden = !root;
-  const kdriveOn = field("kdrive_enabled").checked;
-  const synOn = field("synology_enabled").checked;
   form.querySelector("#target-kdrive")?.classList.toggle("is-off", !kdriveOn);
   form.querySelector("#target-synology")?.classList.toggle("is-off", !synOn);
   form.querySelectorAll("[data-target-body=kdrive]").forEach((el) => { el.hidden = !kdriveOn; });
@@ -486,8 +518,16 @@ function syncVisibility() {
 function readJob() {
   const form = document.getElementById("job-form");
   const field = (name) => form.querySelector(`[name="${name}"]`);
-  const mode = field("mode").value;
-  const keepVersion = field("keep_version").checked;
+  const kdriveOn = field("kdrive_enabled").checked;
+  const synOn = field("synology_enabled").checked;
+  const kdMode = field("kdrive_mode")?.value || "upload";
+  const synMode = field("synology_mode")?.value || "upload";
+  const keepVersion = field("kdrive_keep_version")?.checked;
+  const kdExisting = kdMode === "bisync" ? (keepVersion ? "version" : "overwrite") : (field("kdrive_existing")?.value || "newer");
+  const synExisting = field("synology_existing")?.value || "newer";
+  let confirmDelete = true;
+  if (kdriveOn && isMirrorMode(kdMode)) confirmDelete = confirmDelete && !!field("kdrive_confirm_delete")?.checked;
+  if (synOn && isMirrorMode(synMode)) confirmDelete = confirmDelete && !!field("synology_confirm_delete")?.checked;
   const id = form.dataset.id;
   const locals = [...form.querySelectorAll(".source-row [name=local]")];
   const remotes = [...form.querySelectorAll("#kdrive-dests [name=remote]")];
@@ -495,18 +535,23 @@ function readJob() {
   const job = {
     name: field("name").value.trim(),
     enabled: field("enabled").checked,
-    kdrive_enabled: field("kdrive_enabled").checked,
-    synology_enabled: field("synology_enabled").checked,
+    kdrive_enabled: kdriveOn,
+    synology_enabled: synOn,
     synology_share: field("synology_share")?.value || "",
     mappings: locals.map((input, index) => ({
       local: input.value.trim(),
       remote: remotes[index]?.value.trim() || "",
       synology: syns[index]?.value.trim() || "",
     })),
-    mode,
-    existing: mode === "bisync" ? (keepVersion ? "version" : "overwrite") : field("existing").value,
-    conflict: field("conflict").value,
-    confirm_delete: field("confirm_delete").checked,
+    mode: kdriveOn ? kdMode : synMode,
+    existing: kdriveOn ? kdExisting : synExisting,
+    conflict: field("kdrive_conflict")?.value || "newer",
+    kdrive_mode: kdMode,
+    kdrive_existing: kdExisting,
+    kdrive_conflict: field("kdrive_conflict")?.value || "newer",
+    synology_mode: synMode,
+    synology_existing: synExisting,
+    confirm_delete: confirmDelete,
     confirm_root: field("confirm_root").checked,
     schedule: {
       type: field("schedule_type").value,

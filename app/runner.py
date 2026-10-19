@@ -93,7 +93,7 @@ class Runner:
     def start(self, job: dict, *, trigger: str, dry_run: bool = False, resync: bool = False) -> dict:
         if self.is_running(job["id"]):
             raise ValueError("Dieser Auftrag läuft bereits")
-        if job["mode"] in engine.MIRROR_MODES and not job.get("confirm_delete"):
+        if engine.any_mirror_mode(job) and not job.get("confirm_delete"):
             raise ValueError("Löschen ist für diesen Auftrag nicht bestätigt")
         effective_resync = resync or (dry_run and engine.needs_resync(job))
         if engine.needs_resync(job) and not dry_run and not resync:
@@ -209,7 +209,13 @@ class Runner:
             filter_path = self.store.config_dir / "filters" / f"{job['id']}.txt"
             filter_path.write_text(filters, encoding="utf-8")
             stamp = datetime.now(self.tz).strftime("%Y%m%d-%H%M%S")
-            if job["existing"] == "version" or (job["mode"] == "bisync" and resync):
+            kd = engine.target_cfg(job, "kdrive")
+            syn = engine.target_cfg(job, "synology")
+            needs_versions = (
+                (job.get("kdrive_enabled", True) and (kd["existing"] == "version" or (kd["mode"] == "bisync" and resync)))
+                or (job.get("synology_enabled") and syn["existing"] == "version")
+            )
+            if needs_versions:
                 slug = engine.slugify(job["name"], job["id"])
                 (self.store.config_dir / "versions" / slug / stamp).mkdir(parents=True, exist_ok=True)
             if job.get("kdrive_enabled", True):
@@ -254,7 +260,8 @@ class Runner:
                     with log_path.open("a", encoding="utf-8") as handle:
                         handle.write("# PLAN " + json.dumps(step["plan"], ensure_ascii=False) + "\n")
                 combined_path = None
-                if dry_run and job["mode"] != "bisync":
+                step_mode = engine.target_cfg(job, "kdrive" if step.get("target") == "kdrive" else "synology")["mode"]
+                if dry_run and step_mode != "bisync":
                     combined_path = log_path.with_name(f"{log_path.stem}-{index}.combined")
                     combined_path.unlink(missing_ok=True)
                     argv = [*argv, "--combined", str(combined_path)]
@@ -273,7 +280,7 @@ class Runner:
                 pairs = {(m["local"], m["remote"]) for m in job["mappings"]}
 
                 def mark(item, _pairs=pairs):
-                    if item.get("mode") != "bisync":
+                    if engine.target_cfg(item, "kdrive")["mode"] != "bisync":
                         return
                     if item.get("option_signature") != job.get("option_signature"):
                         return

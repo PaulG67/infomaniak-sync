@@ -120,6 +120,35 @@ def blank_job() -> dict:
     }
 
 
+def target_cfg(job: dict, target: str) -> dict:
+    """Art / Ersetzen / Konflikt für ein Ziel. Alte Jobs ohne Ziel-Felder nutzen mode/existing/conflict."""
+    legacy_mode = str(job.get("mode") or "upload")
+    legacy_existing = str(job.get("existing") or "newer")
+    legacy_conflict = str(job.get("conflict") or "newer")
+    if target == "kdrive":
+        return {
+            "mode": str(job.get("kdrive_mode") or legacy_mode),
+            "existing": str(job.get("kdrive_existing") or legacy_existing),
+            "conflict": str(job.get("kdrive_conflict") or legacy_conflict),
+        }
+    mode = str(job.get("synology_mode") or "")
+    if not mode:
+        mode = "upload" if legacy_mode == "bisync" else legacy_mode
+    return {
+        "mode": mode,
+        "existing": str(job.get("synology_existing") or legacy_existing),
+        "conflict": "newer",
+    }
+
+
+def any_mirror_mode(job: dict) -> bool:
+    if job.get("kdrive_enabled", True) and target_cfg(job, "kdrive")["mode"] in MIRROR_MODES:
+        return True
+    if job.get("synology_enabled") and target_cfg(job, "synology")["mode"] in MIRROR_MODES:
+        return True
+    return False
+
+
 def as_bool(value, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
@@ -479,7 +508,11 @@ def _overlaps(sync_remote: str, backup: str) -> bool:
 
 
 def bisync_signature_matches(old: dict | None, job: dict) -> bool:
-    if not old or old.get("mode") != "bisync" or job["mode"] != "bisync":
+    if not old:
+        return False
+    if target_cfg(old, "kdrive")["mode"] != "bisync" or target_cfg(job, "kdrive")["mode"] != "bisync":
+        return False
+    if not old.get("kdrive_enabled", True) or not job.get("kdrive_enabled", True):
         return False
     return old.get("option_signature") == job["option_signature"]
 
@@ -513,11 +546,41 @@ def prepare_job(
         synology_enabled = as_bool((old or {}).get("synology_enabled"), False)
     if not kdrive_enabled and not synology_enabled:
         raise ValueError("Mindestens Infomaniak oder SMB muss aktiv sein")
-    mode = str(raw.get("mode") or "upload")
-    if mode not in MODES:
-        raise ValueError("Synchronisationsart ungültig")
-    if synology_enabled and mode == "bisync":
-        raise ValueError("Beidseitiger Abgleich gilt nur für Infomaniak. SMB deaktivieren oder eine andere Art wählen.")
+    legacy_mode = str(raw.get("mode") or (old or {}).get("mode") or "upload")
+    legacy_existing = str(raw.get("existing") or (old or {}).get("existing") or "newer")
+    legacy_conflict = str(raw.get("conflict") or (old or {}).get("conflict") or "newer")
+
+    def _field(key: str, fallback: str) -> str:
+        if key in raw and raw.get(key) not in (None, ""):
+            return str(raw.get(key)).strip()
+        if old and old.get(key) not in (None, ""):
+            return str(old.get(key)).strip()
+        return fallback
+
+    kdrive_mode = _field("kdrive_mode", legacy_mode)
+    kdrive_existing = _field("kdrive_existing", legacy_existing)
+    kdrive_conflict = _field("kdrive_conflict", legacy_conflict)
+    synology_mode = _field(
+        "synology_mode",
+        "upload" if legacy_mode == "bisync" else legacy_mode,
+    )
+    synology_existing = _field("synology_existing", legacy_existing)
+    if kdrive_enabled and kdrive_mode not in MODES:
+        raise ValueError("Infomaniak: Synchronisationsart ungültig")
+    if synology_enabled and synology_mode not in MODES:
+        raise ValueError("SMB: Synchronisationsart ungültig")
+    if synology_enabled and synology_mode == "bisync":
+        raise ValueError("Beidseitiger Abgleich gilt nur für Infomaniak.")
+    if kdrive_enabled and kdrive_existing not in EXISTING:
+        raise ValueError("Infomaniak: Umgang mit vorhandenen Dateien ungültig")
+    if synology_enabled and synology_existing not in EXISTING:
+        raise ValueError("SMB: Umgang mit vorhandenen Dateien ungültig")
+    if kdrive_enabled and kdrive_conflict not in CONFLICTS:
+        raise ValueError("Infomaniak: Konfliktregel ungültig")
+    # Anzeige / Kompatibilität: primäres Ziel Infomaniak, sonst SMB
+    mode = kdrive_mode if kdrive_enabled else synology_mode
+    existing = kdrive_existing if kdrive_enabled else synology_existing
+    conflict = kdrive_conflict if kdrive_enabled else "newer"
     synology_share = str(
         raw.get("synology_share")
         if "synology_share" in raw
@@ -543,12 +606,6 @@ def prepare_job(
                 f"SMB-Remotes fehlen. Im Template den Path Remotes auf {SYNOLOGY_EXAMPLE} setzen "
                 "und Edit → Apply."
             )
-    existing = str(raw.get("existing") or "newer")
-    if existing not in EXISTING:
-        raise ValueError("Umgang mit vorhandenen Dateien ungültig")
-    conflict = str(raw.get("conflict") or "newer")
-    if conflict not in CONFLICTS:
-        raise ValueError("Konfliktregel ungültig")
     compare = str(raw.get("compare") or "modtime")
     if compare not in COMPARES:
         raise ValueError("Vergleich ungültig")
@@ -602,11 +659,11 @@ def prepare_job(
         if local == "" and not confirm_root and not relax_confirm:
             raise ValueError("Bestätige, dass der gesamte gemountete Inhalt synchronisiert werden soll.")
         local_path(shares_root, local)
-        if kdrive_enabled and remote == "" and not relax_confirm and mode in {"download", "mirror_down", "bisync"}:
+        if kdrive_enabled and remote == "" and not relax_confirm and kdrive_mode in {"download", "mirror_down", "bisync"}:
             # leerer Remote-Pfad = Wurzel ist erlaubt
             pass
         if synology_enabled and synology_root is not None:
-            dest_must_exist = mode in {"download", "mirror_down"}
+            dest_must_exist = synology_mode in {"download", "mirror_down"}
             under_root(synology_root, synology, label="SMB-Ordner", must_exist=dest_must_exist)
         mappings.append(
             {
@@ -616,8 +673,13 @@ def prepare_job(
                 "bisync_ready": False,
             }
         )
-    if mode in MIRROR_MODES and not as_bool(raw.get("confirm_delete")) and not relax_confirm:
-        if mode == "mirror_down":
+    mirror_modes = set()
+    if kdrive_enabled and kdrive_mode in MIRROR_MODES:
+        mirror_modes.add(kdrive_mode)
+    if synology_enabled and synology_mode in MIRROR_MODES:
+        mirror_modes.add(synology_mode)
+    if mirror_modes and not as_bool(raw.get("confirm_delete")) and not relax_confirm:
+        if "mirror_down" in mirror_modes and "mirror_up" not in mirror_modes:
             raise ValueError("Bestätige das Löschen lokaler Dateien, die auf dem Ziel fehlen.")
         raise ValueError("Bestätige das Löschen von Zieldateien, die lokal fehlen.")
     job_id = str((old or {}).get("id") or "")
@@ -634,6 +696,11 @@ def prepare_job(
         "mode": mode,
         "existing": existing,
         "conflict": conflict,
+        "kdrive_mode": kdrive_mode if kdrive_enabled else "upload",
+        "kdrive_existing": kdrive_existing if kdrive_enabled else "newer",
+        "kdrive_conflict": kdrive_conflict if kdrive_enabled else "newer",
+        "synology_mode": synology_mode if synology_enabled else "upload",
+        "synology_existing": synology_existing if synology_enabled else "newer",
         "version_dir": version_dir,
         "version_keep_days": keep_days,
         "compare": compare,
@@ -662,12 +729,12 @@ def prepare_job(
     job["option_signature"] = option_signature(job)
     prefix = backup_prefix(job)
     for mapping in job["mappings"]:
-        if kdrive_enabled and job["existing"] == "version" and _overlaps(mapping["remote"], prefix):
+        if kdrive_enabled and kdrive_existing == "version" and _overlaps(mapping["remote"], prefix):
             raise ValueError(
                 "Der Versionsordner liegt im synchronisierten kDrive-Ordner. "
                 "Wähle einen Ordner daneben, zum Beispiel _Versionen."
             )
-        if synology_enabled and job["existing"] == "version" and _overlaps(mapping["synology"], prefix):
+        if synology_enabled and synology_existing == "version" and _overlaps(mapping["synology"], prefix):
             raise ValueError(
                 "Der Versionsordner liegt im synchronisierten SMB-Ordner. "
                 "Wähle einen Ordner daneben, zum Beispiel _Versionen."
@@ -687,7 +754,7 @@ def prepare_job(
 
 
 def schedule_block(job: dict) -> str:
-    if job.get("mode") != "bisync":
+    if not job.get("kdrive_enabled", True) or target_cfg(job, "kdrive")["mode"] != "bisync":
         return ""
     if all(mapping.get("bisync_ready") for mapping in job.get("mappings") or []):
         return ""
@@ -695,12 +762,24 @@ def schedule_block(job: dict) -> str:
 
 
 def describe(job: dict) -> str:
-    targets = []
+    parts = []
     if job.get("kdrive_enabled", True):
-        targets.append("Infomaniak")
+        cfg = target_cfg(job, "kdrive")
+        parts.append("Infomaniak: " + MODE_TEXT.get(cfg["mode"], cfg["mode"]))
+        if cfg["mode"] == "bisync":
+            parts.append(CONFLICT_TEXT.get(cfg["conflict"], ""))
+        else:
+            parts.append(EXISTING_TEXT.get(cfg["existing"], ""))
+        if cfg["existing"] == "version":
+            parts.append(f"Versionen liegen unter {job.get('version_dir') or '_Versionen'}.")
     if job.get("synology_enabled"):
+        cfg = target_cfg(job, "synology")
         share = (job.get("synology_share") or "").strip()
-        targets.append(f"SMB:{share}" if share else "SMB")
+        label = f"SMB:{share}" if share else "SMB"
+        parts.append(f"{label}: " + MODE_TEXT.get(cfg["mode"], cfg["mode"]))
+        parts.append(EXISTING_TEXT.get(cfg["existing"], ""))
+        if cfg["existing"] == "version":
+            parts.append(f"Versionen liegen unter {job.get('version_dir') or '_Versionen'}.")
     pairs = []
     for mapping in job.get("mappings") or []:
         local = mapping.get("local") or ""
@@ -718,16 +797,6 @@ def describe(job: dict) -> str:
             else:
                 ends.append(f"SMB:{sub or '/'}")
         pairs.append(f"{src} → {' und '.join(ends)}")
-    mode = str(job.get("mode") or "upload")
-    parts = [MODE_TEXT.get(mode, mode)]
-    if targets:
-        parts.append("Ziele: " + ", ".join(targets) + ".")
-    if mode == "bisync":
-        parts.append(CONFLICT_TEXT.get(str(job.get("conflict") or "newer"), ""))
-    else:
-        parts.append(EXISTING_TEXT.get(str(job.get("existing") or "newer"), ""))
-    if job.get("existing") == "version":
-        parts.append(f"Versionen liegen unter {job.get('version_dir') or '_Versionen'}.")
     try:
         parts.append(f"Zeitplan: {schedule_label(job)}.")
     except (KeyError, TypeError, ValueError):
@@ -832,33 +901,38 @@ def build_commands(
             f"SMB-Remotes fehlen. Im Template den Path Remotes auf {SYNOLOGY_EXAMPLE} setzen "
             "und Edit → Apply."
         )
+    kd = target_cfg(job, "kdrive")
+    syn = target_cfg(job, "synology")
     for index, mapping in enumerate(job["mappings"]):
         local = local_path(shares_root, mapping["local"])
         local_s = str(local)
-        src_is_local = job["mode"] in {"upload", "mirror_up", "bisync"}
-        if job["mode"] == "bisync":
-            way = "both"
-        elif job["mode"] in {"upload", "mirror_up"}:
-            way = "up"
-        else:
-            way = "down"
-        use_backup = job["existing"] == "version" or (job["mode"] == "bisync" and resync)
         leaf = f"{stamp}-{index}"
         local_backup = version_root / slug / stamp / str(index)
 
         if kdrive_on:
+            mode = kd["mode"]
+            existing = kd["existing"]
+            conflict = kd["conflict"]
+            src_is_local = mode in {"upload", "mirror_up", "bisync"}
+            if mode == "bisync":
+                way = "both"
+            elif mode in {"upload", "mirror_up"}:
+                way = "up"
+            else:
+                way = "down"
+            use_backup = existing == "version" or (mode == "bisync" and resync)
             remote = mapping["remote"]
             remote_s = remote_spec(remote_name, remote)
-            if job["mode"] == "bisync":
+            if mode == "bisync":
                 argv = ["rclone", "bisync", local_s, remote_s]
             elif src_is_local:
-                op = "copy" if job["mode"] == "upload" else "sync"
+                op = "copy" if mode == "upload" else "sync"
                 argv = ["rclone", op, local_s, remote_s]
             else:
-                op = "copy" if job["mode"] == "download" else "sync"
+                op = "copy" if mode == "download" else "sync"
                 argv = ["rclone", op, remote_s, local_s]
             argv.extend(_common_flags(job, config_path=config_path, dry_run=dry_run))
-            if job["mode"] == "bisync":
+            if mode == "bisync":
                 digest = hashlib.sha1(f"{mapping['local']}\n{mapping['remote']}".encode()).hexdigest()[:12]
                 argv.extend(
                     [
@@ -876,12 +950,10 @@ def build_commands(
                         "unraid,kdrive",
                     ]
                 )
-                if job["conflict"] == "both":
+                if conflict == "both":
                     argv.extend(["--conflict-resolve", "none"])
                 else:
-                    resolved = {"newer": "newer", "larger": "larger", "local": "path1", "remote": "path2"}[
-                        job["conflict"]
-                    ]
+                    resolved = {"newer": "newer", "larger": "larger", "local": "path1", "remote": "path2"}[conflict]
                     argv.extend(["--conflict-resolve", resolved])
                 compare = {"modtime": "size,modtime", "checksum": "size,modtime,checksum", "size": "size"}[
                     job["compare"]
@@ -894,19 +966,19 @@ def build_commands(
                         "local": "path1",
                         "remote": "path2",
                         "both": "newer",
-                    }[job["conflict"]]
+                    }[conflict]
                     argv.extend(["--resync-mode", resync_mode])
             else:
                 argv.extend(["--filter-from", str(filter_path)])
-                if job["existing"] == "newer":
+                if existing == "newer":
                     argv.append("--update")
-                elif job["existing"] == "skip":
+                elif existing == "skip":
                     argv.append("--ignore-existing")
-                if job["compare"] == "checksum" and job["existing"] != "newer":
+                if job["compare"] == "checksum" and existing != "newer":
                     argv.append("--checksum")
-                elif job["compare"] == "size" and job["existing"] != "newer":
+                elif job["compare"] == "size" and existing != "newer":
                     argv.append("--size-only")
-                if job["mode"] in MIRROR_MODES:
+                if mode in MIRROR_MODES:
                     if job.get("track_renames"):
                         argv.extend(["--track-renames", "--delete-after"])
                     else:
@@ -919,7 +991,7 @@ def build_commands(
                         )
             if use_backup:
                 remote_backup = f"{job['version_dir'].strip('/')}/{slug}/{stamp}/{index}"
-                if job["mode"] == "bisync":
+                if mode == "bisync":
                     argv.extend(
                         [
                             "--backup-dir1",
@@ -931,7 +1003,7 @@ def build_commands(
                             "--suffix-keep-extension",
                         ]
                     )
-                elif job["mode"] in {"upload", "mirror_up"}:
+                elif mode in {"upload", "mirror_up"}:
                     argv.extend(
                         [
                             "--backup-dir",
@@ -945,7 +1017,6 @@ def build_commands(
                     argv.extend(
                         ["--backup-dir", str(local_backup), "--suffix", leaf, "--suffix-keep-extension"]
                     )
-            # dry-run flags already in _common_flags; remove duplicate if bisync path added them via _common
             steps.append(
                 {
                     "target": "kdrive",
@@ -955,7 +1026,7 @@ def build_commands(
                         "remote": mapping.get("remote") or "",
                         "dir": way,
                         "version": use_backup,
-                        "deletes": job["mode"] in {"mirror_up", "mirror_down"},
+                        "deletes": mode in {"mirror_up", "mirror_down"},
                         "target": "kdrive",
                     },
                 }
@@ -963,32 +1034,37 @@ def build_commands(
 
         if synology_on:
             assert synology_root is not None
+            mode = syn["mode"]
+            existing = syn["existing"]
+            src_is_local = mode in {"upload", "mirror_up"}
+            way = "up" if src_is_local else "down"
+            use_backup = existing == "version"
             syn_rel = mapping.get("synology") or ""
             syn_path = under_root(
                 synology_root,
                 syn_rel,
                 label="SMB-Ordner",
-                must_exist=job["mode"] in {"download", "mirror_down"},
+                must_exist=mode in {"download", "mirror_down"},
             )
-            if job["mode"] in {"upload", "mirror_up"} and not syn_path.exists() and not dry_run:
+            if mode in {"upload", "mirror_up"} and not syn_path.exists() and not dry_run:
                 syn_path.mkdir(parents=True, exist_ok=True)
             syn_s = str(syn_path)
-            op = "copy" if job["mode"] in {"upload", "download"} else "sync"
+            op = "copy" if mode in {"upload", "download"} else "sync"
             if src_is_local:
                 argv = ["rclone", op, local_s, syn_s]
             else:
                 argv = ["rclone", op, syn_s, local_s]
             argv.extend(_common_flags(job, config_path=config_path, dry_run=dry_run))
             argv.extend(["--filter-from", str(filter_path)])
-            if job["existing"] == "newer":
+            if existing == "newer":
                 argv.append("--update")
-            elif job["existing"] == "skip":
+            elif existing == "skip":
                 argv.append("--ignore-existing")
-            if job["compare"] == "checksum" and job["existing"] != "newer":
+            if job["compare"] == "checksum" and existing != "newer":
                 argv.append("--checksum")
-            elif job["compare"] == "size" and job["existing"] != "newer":
+            elif job["compare"] == "size" and existing != "newer":
                 argv.append("--size-only")
-            if job["mode"] in MIRROR_MODES:
+            if mode in MIRROR_MODES:
                 if job.get("track_renames"):
                     argv.extend(["--track-renames", "--delete-after"])
                 else:
@@ -1006,7 +1082,7 @@ def build_commands(
                     label="SMB-Versionsordner",
                     must_exist=False,
                 )
-                if job["mode"] in {"upload", "mirror_up"}:
+                if mode in {"upload", "mirror_up"}:
                     syn_backup.mkdir(parents=True, exist_ok=True)
                     argv.extend(
                         ["--backup-dir", str(syn_backup), "--suffix", leaf, "--suffix-keep-extension"]
@@ -1024,7 +1100,7 @@ def build_commands(
                         "remote": syn_rel,
                         "dir": way,
                         "version": use_backup,
-                        "deletes": job["mode"] in {"mirror_up", "mirror_down"},
+                        "deletes": mode in {"mirror_up", "mirror_down"},
                         "target": "synology",
                     },
                 }
@@ -1572,4 +1648,8 @@ def old_stamps(names: list[str], *, now: datetime, keep_days: int, tz: ZoneInfo)
 
 
 def needs_resync(job: dict) -> bool:
-    return job.get("mode") == "bisync" and not all(m.get("bisync_ready") for m in job.get("mappings") or [])
+    if not job.get("kdrive_enabled", True):
+        return False
+    if target_cfg(job, "kdrive")["mode"] != "bisync":
+        return False
+    return not all(m.get("bisync_ready") for m in job.get("mappings") or [])
