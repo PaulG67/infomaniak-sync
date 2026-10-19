@@ -205,8 +205,9 @@ def list_synology_shares(
         )
     ud_dir_ok = ud_config_dir.is_dir()
     remotes_ok = remotes_root.is_dir()
+    # Nur /mnt/remotes muss eingebunden sein; UD-Config ist optional.
     return {
-        "available": ud_dir_ok or remotes_ok,
+        "available": remotes_ok and bool(shares),
         "ud_present": ud_dir_ok,
         "ud_cfg_present": cfg_path is not None,
         "ud_cfg_file": str(cfg_path) if cfg_path else "",
@@ -219,6 +220,7 @@ def list_synology_shares(
         "shares": shares,
         "example_ud": UD_EXAMPLE,
         "example_remotes": HOST_REMOTES,
+        "needs_remotes_path": not remotes_ok,
     }
 
 
@@ -227,10 +229,10 @@ def resolve_synology_root(remotes_root: Path, selected_id: str) -> Path:
     if not selected_id:
         return remotes_root
     if not SAFE_NAME.fullmatch(selected_id):
-        raise ValueError("Ungültiger Synology-Share")
+        raise ValueError("Ungültiger SMB-Share")
     target = (remotes_root / selected_id).resolve()
     try:
         target.relative_to(remotes_root.resolve())
     except ValueError as exc:
-        raise ValueError("Synology-Share liegt ausserhalb des Remotes-Pfads") from exc
+        raise ValueError("SMB-Share liegt ausserhalb des Remotes-Pfads") from exc
     return target

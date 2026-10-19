@@ -40,7 +40,7 @@ Dann **Docker → infomaniak-sync → Force Update**. Neue Template-Felder zusä
 
 ## Was ein Auftrag kann
 
-- Infomaniak kDrive und/oder Synology-Backup in demselben Auftrag, jeweils einzeln abschaltbar
+- Infomaniak kDrive und/oder SMB-Backup (Unassigned Devices) in demselben Auftrag, jeweils einzeln abschaltbar
 - Nur hochladen, nur herunterladen, eine Seite angleichen (mit Löschen) oder beidseitig (beidseitig nur mit Infomaniak)
 - Vorhandene Dateien überschreiben, nur neuere übernehmen, überspringen oder die alte Fassung in `_Versionen` legen
 - Beidseitig: neuere oder grössere Datei, Unraid oder kDrive gewinnt, oder beide Fassungen bleiben
@@ -50,7 +50,7 @@ Dann **Docker → infomaniak-sync → Force Update**. Neue Template-Felder zusä
 
 Angleichen löscht Dateien auf der Zielseite. Die Oberfläche verlangt dafür eine Bestätigung. Der beidseitige Zeitplan startet erst nach einem manuellen Erstabgleich. Dabei landen überschriebene Fassungen im Versionsordner.
 
-Für Synology im Unraid-Template die Pfade **Synology** (`/mnt/remotes`) und **Unassigned Devices** setzen. Unter **Einstellungen** den SMB-Share wählen; Quelle, Mountpoint und ob er eingehängt ist, kommen von Unraid. Nach Force Update einmal **Edit → Apply**.
+Für SMB-Backup im Unraid-Template den Path **Remotes** auf Host `/mnt/remotes` setzen (wie Unassigned Devices). Unter **Einstellungen** den Share wählen. Nach Force Update einmal **Edit → Apply**.
 
 Ordner namens `.oc-nodes` und die Dateien darin (OpenCloud-Metadaten) bleiben in der Probelauf-Tabelle ausgeblendet. Synchronisiert werden sie weiterhin.
 

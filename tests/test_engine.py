@@ -289,7 +289,7 @@ def test_synology_and_kdrive_in_one_job(tmp_path):
     assert steps[0]["argv"][:4] == ["rclone", "copy", str((root / "photos").resolve()), "kdrive:Fotos"]
     assert steps[1]["argv"][1] == "copy"
     assert str((syn / "Backup" / "Fotos").resolve()) in steps[1]["argv"]
-    assert "Synology" in describe(job)
+    assert "SMB" in describe(job)
     with pytest.raises(ValueError, match="Beidseitiger"):
         prepare_job(
             payload(mode="bisync", synology_enabled=True, confirm_delete=True),

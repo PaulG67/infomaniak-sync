@@ -53,10 +53,19 @@ header p { margin: .15rem 0 0; color: var(--muted); }
   flex: 0 0 auto;
 }
 .share-table { width: 100%; border-collapse: collapse; font-size: .92rem; }
-.share-table th, .share-table td { text-align: left; padding: .55rem .4rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+.share-table th, .share-table td { text-align: left; padding: .55rem .4rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
 .share-table th { color: var(--muted); font-weight: 600; font-size: .8rem; }
+.share-table tr.share-row { cursor: pointer; }
+.share-table tr.share-row:hover { background: #f3f8fa; }
 .share-table tr.selected { background: #e7f3f7; }
 .share-table .path { word-break: break-all; font-family: ui-monospace, Consolas, monospace; font-size: .82rem; }
+.share-table .share-pick { width: 2rem; }
+.share-table .dot {
+  display: inline-block; width: .65rem; height: .65rem; border-radius: 50%;
+  margin-right: .35rem; vertical-align: middle;
+}
+.share-table .dot.on { background: var(--ok); }
+.share-table .dot.off { background: #b8c0c8; }
 .settings-stack { display: grid; gap: .9rem; }
 .settings-stack h2 { margin: 0 0 .35rem; font-size: 1.1rem; }
 .tabs button.active, button.primary {

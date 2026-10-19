@@ -507,17 +507,17 @@ def prepare_job(
     else:
         synology_enabled = as_bool((old or {}).get("synology_enabled"), False)
     if not kdrive_enabled and not synology_enabled:
-        raise ValueError("Mindestens Infomaniak oder Synology muss aktiv sein")
+        raise ValueError("Mindestens Infomaniak oder SMB muss aktiv sein")
     mode = str(raw.get("mode") or "upload")
     if mode not in MODES:
         raise ValueError("Synchronisationsart ungültig")
     if synology_enabled and mode == "bisync":
-        raise ValueError("Beidseitiger Abgleich gilt nur für Infomaniak. Synology deaktivieren oder eine andere Art wählen.")
+        raise ValueError("Beidseitiger Abgleich gilt nur für Infomaniak. SMB deaktivieren oder eine andere Art wählen.")
     if synology_enabled:
         if synology_root is None or not synology_root.is_dir():
             raise ValueError(
-                "Synology-Laufwerk ist nicht eingebunden. Im Unraid-Template den Pfad Synology setzen, "
-                f"zum Beispiel {SYNOLOGY_EXAMPLE}."
+                f"SMB-Remotes fehlen. Im Template den Path Remotes auf {SYNOLOGY_EXAMPLE} setzen "
+                "und Edit → Apply."
             )
     existing = str(raw.get("existing") or "newer")
     if existing not in EXISTING:
@@ -571,7 +571,7 @@ def prepare_job(
             raise ValueError("Ordnerpaar ungültig")
         local = clean_rel(item.get("local"), label="Unraid-Ordner")
         remote = clean_rel(item.get("remote"), label="kDrive-Ordner") if kdrive_enabled else ""
-        synology = clean_rel(item.get("synology"), label="Synology-Ordner") if synology_enabled else ""
+        synology = clean_rel(item.get("synology"), label="SMB-Ordner") if synology_enabled else ""
         if local in seen:
             raise ValueError(f"Unraid-Ordner doppelt: {local or '/'}")
         seen.add(local)
@@ -583,7 +583,7 @@ def prepare_job(
             pass
         if synology_enabled and synology_root is not None:
             dest_must_exist = mode in {"download", "mirror_down"}
-            under_root(synology_root, synology, label="Synology-Ordner", must_exist=dest_must_exist)
+            under_root(synology_root, synology, label="SMB-Ordner", must_exist=dest_must_exist)
         mappings.append(
             {
                 "local": local,
@@ -644,7 +644,7 @@ def prepare_job(
             )
         if synology_enabled and job["existing"] == "version" and _overlaps(mapping["synology"], prefix):
             raise ValueError(
-                "Der Versionsordner liegt im synchronisierten Synology-Ordner. "
+                "Der Versionsordner liegt im synchronisierten SMB-Ordner. "
                 "Wähle einen Ordner daneben, zum Beispiel _Versionen."
             )
     ready_by_pair: dict[tuple[str, str], bool] = {}
@@ -674,7 +674,7 @@ def describe(job: dict) -> str:
     if job.get("kdrive_enabled", True):
         targets.append("Infomaniak")
     if job.get("synology_enabled"):
-        targets.append("Synology")
+        targets.append("SMB")
     pairs = []
     for mapping in job["mappings"]:
         src = "der gesamte gemountete Inhalt" if not mapping["local"] else mapping["local"]
@@ -682,7 +682,7 @@ def describe(job: dict) -> str:
         if job.get("kdrive_enabled", True):
             ends.append("kDrive:" + (mapping["remote"] or "/"))
         if job.get("synology_enabled"):
-            ends.append("Synology:" + (mapping.get("synology") or "/"))
+            ends.append("SMB:" + (mapping.get("synology") or "/"))
         pairs.append(f"{src} → {' und '.join(ends)}")
     parts = [MODE_TEXT[job["mode"]]]
     if targets:
@@ -786,8 +786,8 @@ def build_commands(
     synology_on = bool(job.get("synology_enabled"))
     if synology_on and (synology_root is None or not Path(synology_root).is_dir()):
         raise ValueError(
-            "Synology-Laufwerk ist nicht eingebunden. Im Unraid-Template den Pfad Synology setzen, "
-            f"zum Beispiel {SYNOLOGY_EXAMPLE}."
+            f"SMB-Remotes fehlen. Im Template den Path Remotes auf {SYNOLOGY_EXAMPLE} setzen "
+            "und Edit → Apply."
         )
     for index, mapping in enumerate(job["mappings"]):
         local = local_path(shares_root, mapping["local"])
@@ -924,7 +924,7 @@ def build_commands(
             syn_path = under_root(
                 synology_root,
                 syn_rel,
-                label="Synology-Ordner",
+                label="SMB-Ordner",
                 must_exist=job["mode"] in {"download", "mirror_down"},
             )
             if job["mode"] in {"upload", "mirror_up"} and not syn_path.exists() and not dry_run:
@@ -960,7 +960,7 @@ def build_commands(
                 syn_backup = under_root(
                     synology_root,
                     f"{job['version_dir'].strip('/')}/{slug}/{stamp}/{index}",
-                    label="Synology-Versionsordner",
+                    label="SMB-Versionsordner",
                     must_exist=False,
                 )
                 if job["mode"] in {"upload", "mirror_up"}:
@@ -1145,7 +1145,7 @@ def _join_root(root: str, rel: str) -> str:
 
 
 def _peer_name(target: str) -> str:
-    return "Synology" if target == "synology" else "kDrive"
+    return "SMB" if target == "synology" else "kDrive"
 
 
 def _dry_label(kind: str, direction: str, version: bool, target: str = "kdrive") -> str:
@@ -1287,7 +1287,7 @@ def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
                 "kind": kind,
                 "direction": way,
                 "target": target,
-                "target_label": "Synology" if target == "synology" else "Infomaniak",
+                "target_label": "SMB" if target == "synology" else "Infomaniak",
                 "label": label or _dry_label(kind, way, version, target),
             }
         )

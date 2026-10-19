@@ -166,7 +166,7 @@ function banners() {
     parts.push(`<div class="banner warn">Keine Shares sichtbar. Im Unraid-Template den Pfad Shares auf /mnt/user setzen.</div>`);
   }
   if (!state.synology_ok) {
-    parts.push(`<div class="banner info">Synology ist optional. Unter Einstellungen einen SMB-Share wählen oder im Template den Pfad Synology setzen, zum Beispiel ${esc(state.synology_example || "/mnt/remotes")}.</div>`);
+    parts.push(`<div class="banner info">SMB-Backup ist optional. Im Template den Path <strong>Remotes</strong> auf <code>${esc(state.synology_example || "/mnt/remotes")}</code> setzen, dann unter Einstellungen einen Share wählen.</div>`);
   }
   if (!state.connection.ready) {
     const missing = state.connection.mode === "rclone"
@@ -188,12 +188,12 @@ function renderList() {
     const status = active ? "running" : (job.last_status || "");
     const targets = [
       job.kdrive_enabled !== false ? "Infomaniak" : null,
-      job.synology_enabled ? "Synology" : null,
+      job.synology_enabled ? "SMB" : null,
     ].filter(Boolean).join(" + ") || "kein Ziel";
     const pairs = job.mappings.map((item) => {
       const ends = [];
       if (job.kdrive_enabled !== false) ends.push(`kDrive:${item.remote || "/"}`);
-      if (job.synology_enabled) ends.push(`Synology:${item.synology || "/"}`);
+      if (job.synology_enabled) ends.push(`SMB:${item.synology || "/"}`);
       return `${item.local || "/"} → ${ends.join(" · ") || "—"}`;
     }).join(", ");
     return `<article class="card job">
@@ -248,10 +248,10 @@ function renderEdit(id) {
         <label>Name<input name="name" required maxlength="80" value="${esc(job.name)}" /></label>
         <label class="inline"><input type="checkbox" name="enabled" ${job.enabled ? "checked" : ""} /> Zeitplan für diesen Auftrag aktiv</label>
         <label class="inline check"><input type="checkbox" name="kdrive_enabled" ${job.kdrive_enabled !== false ? "checked" : ""} /> Infomaniak kDrive in diesem Auftrag</label>
-        <label class="inline check"><input type="checkbox" name="synology_enabled" ${job.synology_enabled ? "checked" : ""} /> Synology-Backup in diesem Auftrag</label>
-        <p class="hint">Mindestens ein Ziel muss aktiv sein. Synology nutzt das im Template eingebundene Laufwerk${state.synology_ok ? "" : " (noch nicht eingebunden)"}.</p>
+        <label class="inline check"><input type="checkbox" name="synology_enabled" ${job.synology_enabled ? "checked" : ""} /> SMB-Backup (Unassigned Devices) in diesem Auftrag</label>
+        <p class="hint">Mindestens ein Ziel muss aktiv sein. SMB nutzt den Path Remotes${state.synology_ok ? "" : " (noch nicht eingebunden — Host-Pfad /mnt/remotes)"}.</p>
         <div class="split"><strong>Ordner</strong><button type="button" data-act="add-map">Ordnerpaar hinzufügen</button></div>
-        <p class="hint">Ein Share ist ein Ordner direkt unter dem gemounteten Pfad. Unterordner trägst du als share/unterordner ein. Zielordner auf kDrive und Synology dürfen anders heissen oder tiefer liegen.</p>
+        <p class="hint">Ein Share ist ein Ordner direkt unter dem gemounteten Pfad. Unterordner trägst du als share/unterordner ein. Zielordner auf kDrive und SMB dürfen anders heissen oder tiefer liegen.</p>
         <div id="maps">${maps}</div>
         <div id="confirm-root-field">
           <label class="inline check"><input type="checkbox" name="confirm_root" ${job.confirm_root ? "checked" : ""} /> Gesamten gemounteten Inhalt synchronisieren</label>
@@ -342,11 +342,11 @@ function mappingRow(item) {
   return `<div class="mapping">
     <label>Unraid<input name="local" value="${esc(item.local || "")}" spellcheck="false" placeholder="photos oder photos/2024" /></label>
     <label data-target="kdrive">kDrive<input name="remote" value="${esc(item.remote || "")}" spellcheck="false" placeholder="Fotos oder Archiv/Fotos" /></label>
-    <label data-target="synology">Synology<input name="synology" value="${esc(item.synology || "")}" spellcheck="false" placeholder="Backup/Fotos" /></label>
+    <label data-target="synology">SMB<input name="synology" value="${esc(item.synology || "")}" spellcheck="false" placeholder="Backup/Fotos" /></label>
     <div class="row map-actions">
       <button type="button" data-act="browse" data-field="local">Unraid wählen</button>
       <button type="button" data-act="browse" data-field="remote" data-target="kdrive">kDrive wählen</button>
-      <button type="button" data-act="browse" data-field="synology" data-target="synology">Synology wählen</button>
+      <button type="button" data-act="browse" data-field="synology" data-target="synology">SMB wählen</button>
       <button type="button" data-act="same-path">Gleicher Pfad</button>
       <button type="button" data-act="base-name">Nur Ordnername</button>
       <button type="button" data-act="remove-map">Entfernen</button>
@@ -471,34 +471,32 @@ function renderSettings() {
     ? "Die rclone-Datei ist eingebunden. Es werden die Zugangsdaten daraus verwendet, keine zweiten."
     : `Die rclone-Datei ist nicht eingebunden. Im Template den Pfad setzen, zum Beispiel ${connection.example_path}.`;
   const shares = synology.shares || [];
-  const shareRows = shares.map((item) => `<tr class="${item.selected ? "selected" : ""}">
-    <td><label class="inline check"><input type="radio" name="synology_share" value="${esc(item.id)}" ${item.selected ? "checked" : ""} /> <strong>${esc(item.id)}</strong></label></td>
-    <td><span class="path">${esc(item.source || "—")}</span><div class="meta">${esc(item.protocol || "SMB")}${item.host ? ` · ${esc(item.host)}` : ""}</div></td>
-    <td><span class="path">${esc(item.mountpoint || "—")}</span></td>
-    <td><span class="pill ${item.mounted ? "ok" : "warn"}">${item.mounted ? "eingehängt" : "ausgehängt"}</span></td>
+  const shareRows = shares.map((item) => `<tr class="share-row ${item.selected ? "selected" : ""}" data-act="pick-share" data-id="${esc(item.id)}">
+    <td class="share-pick"><input type="radio" name="synology_share" value="${esc(item.id)}" ${item.selected ? "checked" : ""} aria-label="${esc(item.id)}" /></td>
+    <td><span class="path">${esc(item.source || "—")}</span></td>
+    <td><span class="path">${esc(item.id)}</span></td>
+    <td><span class="dot ${item.mounted ? "on" : "off"}" title="${item.mounted ? "eingehängt" : "ausgehängt"}"></span>
+      <span class="meta">${item.mounted ? "eingehängt" : "ausgehängt"}</span></td>
   </tr>`).join("");
+  const remotesOk = synology.remotes_ok;
   const synBody = shares.length
     ? `<div class="plan-wrap"><table class="share-table">
-        <thead><tr><th>Share</th><th>Quelle</th><th>Mountpoint</th><th>Status</th></tr></thead>
+        <thead><tr><th></th><th>Quelle</th><th>Mountpoint</th><th>Status</th></tr></thead>
         <tbody>${shareRows}</tbody>
       </table></div>`
-    : `<div class="banner warn">
-        <p><strong>Keine SMB-Remotes sichtbar.</strong> Force Update allein reicht nicht — die neuen Pfade müssen am Container hängen:</p>
+    : remotesOk
+      ? `<div class="banner warn">
+          <p>Unter <code>/mnt/remotes</code> liegt noch kein Share. In Unraid unter <strong>Unassigned Devices → SMB Shares</strong> einen Remote einhängen, dann neu laden.</p>
+        </div>`
+      : `<div class="banner warn">
+        <p><strong>Remotes fehlen.</strong> Ein einziger Path im Docker-Template:</p>
         <ol class="hint" style="margin:.4rem 0 0 1.1rem;padding:0">
           <li>Docker → infomaniak-sync → <strong>Edit</strong></li>
-          <li><strong>Synology</strong> = <code>/mnt/remotes</code></li>
-          <li><strong>Unassigned Devices</strong> = <code>/boot/config/plugins/unassigned.devices</code></li>
+          <li>Path <strong>Remotes</strong>: Host-Pfad <code>/mnt/remotes</code></li>
           <li><strong>Apply</strong>, dann diese Seite neu laden</li>
         </ol>
+        <p class="hint" style="margin-top:.5rem">Force Update allein hängt den Path nicht an.</p>
       </div>`;
-  const remotesOk = synology.remotes_ok;
-  const udOk = synology.ud_present;
-  const cfgOk = synology.ud_cfg_present;
-  const statusBits = [
-    `Remotes ${remotesOk ? "ok" : "fehlt"} (${esc(synology.remotes_root || "/synology")})`,
-    `UD-Ordner ${udOk ? "ok" : "fehlt"}`,
-    cfgOk ? `samba_mount.cfg gefunden (${synology.config_count || 0} Einträge)` : "samba_mount.cfg fehlt",
-  ];
   appEl.innerHTML = `${banners()}
     <div class="settings-stack">
       <form id="connection-form" class="card form">
@@ -534,15 +532,14 @@ function renderSettings() {
         <pre id="test-output" class="preview" hidden></pre>
       </form>
       <form id="synology-form" class="card form">
-        <h2>Synology</h2>
-        <p class="hint">SMB-Shares aus Unassigned Devices (wie unter Main → SMB Shares). Wähle den Share als Backup-Ziel. Quelle und Mountpoint kommen von Unraid; der Status zeigt, ob er eingehängt ist.</p>
-        <p class="meta">${statusBits.map(esc).join(" · ")}</p>
+        <h2>SMB Shares</h2>
+        <p class="hint">Dieselbe Liste wie unter Unassigned Devices. Einen Share als Backup-Ziel wählen.</p>
         ${synBody}
         <div class="row" style="margin-top:.75rem">
-          <button type="submit" class="primary" ${shares.length ? "" : "disabled"}>Synology-Share speichern</button>
+          <button type="submit" class="primary" ${shares.length ? "" : "disabled"}>Share speichern</button>
           <button type="button" data-act="clear-synology" ${state.settings.synology_share ? "" : "disabled"}>Auswahl leeren</button>
         </div>
-        <p class="meta">Aktuell: ${esc(state.settings.synology_share || "gesamtes Remotes-Verzeichnis")}</p>
+        <p class="meta">Aktuell: ${esc(state.settings.synology_share || "kein Share gewählt")}</p>
       </form>
       <form id="settings-form" class="card form">
         <h2>Allgemein</h2>
@@ -655,7 +652,7 @@ function closeModal() {
 async function showBrowse(path) {
   const field = browse.field;
   const endpoint = field === "local" ? "/api/local" : (field === "synology" ? "/api/synology" : "/api/remote");
-  const title = field === "local" ? "Unraid" : (field === "synology" ? "Synology" : "kDrive");
+  const title = field === "local" ? "Unraid" : (field === "synology" ? "SMB" : "kDrive");
   const rootName = field === "local" ? "Shares" : title;
   const query = new URLSearchParams({ path: path || "" });
   try {
@@ -674,7 +671,7 @@ async function showBrowse(path) {
     const rootHint = field === "local"
       ? "Die oberste Ebene sind die Unraid-Shares."
       : (field === "synology"
-        ? "Die oberste Ebene ist das eingebundene Synology-Laufwerk."
+        ? "Die oberste Ebene ist der gewählte SMB-Share unter /mnt/remotes."
         : "Die oberste WebDAV-Ebene enthält den kDrive-Ordner und oft einen Papierkorb. Wähle den Ordner darin.");
     openModal(`<div class="split"><h2 id="modal-title">${title}</h2><button type="button" data-act="close-modal">Schliessen</button></div>
       <div class="crumbs">${crumbs.map((crumb) => `<button type="button" data-act="enter" data-path="${esc(crumb.path)}">${esc(crumb.name)}</button>`).join("")}</div>
@@ -832,10 +829,21 @@ async function onClick(event) {
       paint();
       return;
     }
+    if (act === "pick-share") {
+      const shareId = actEl.dataset.id || "";
+      const radio = appEl.querySelector(`input[name=synology_share][value="${CSS.escape(shareId)}"]`);
+      if (radio) {
+        radio.checked = true;
+        appEl.querySelectorAll(".share-row").forEach((row) => {
+          row.classList.toggle("selected", row.dataset.id === shareId);
+        });
+      }
+      return;
+    }
     if (act === "clear-synology") {
       await api("/api/settings", { method: "POST", body: JSON.stringify({ synology_share: "" }) });
       await reload();
-      showNote("Synology-Auswahl geleert.");
+      showNote("SMB-Auswahl geleert.");
       paint();
     }
   } catch (error) {
@@ -888,7 +896,7 @@ async function onSubmit(event) {
     event.preventDefault();
     const chosen = form.querySelector("[name=synology_share]:checked");
     if (!chosen) {
-      showError("Einen Synology-Share wählen");
+      showError("Einen SMB-Share wählen");
       return;
     }
     try {
@@ -897,7 +905,7 @@ async function onSubmit(event) {
         body: JSON.stringify({ synology_share: chosen.value }),
       });
       await reload();
-      showNote("Synology-Share gespeichert.");
+      showNote("SMB-Share gespeichert.");
       paint();
     } catch (error) {
       showError(error.message);

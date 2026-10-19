@@ -81,7 +81,7 @@ class Runner:
             self.store.require_backend()
         if job.get("synology_enabled") and (self.synology_root is None or not self.synology_root.is_dir()):
             raise ValueError(
-                "Synology-Laufwerk ist nicht eingebunden. Im Unraid-Template den Pfad Synology setzen."
+                f"SMB-Remotes fehlen. Im Template den Path Remotes auf {engine.SYNOLOGY_EXAMPLE} setzen."
             )
         now = datetime.now(self.tz)
         run_id = str(uuid.uuid4())

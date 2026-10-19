@@ -354,11 +354,11 @@ def create_app() -> Flask:
         root = synology_root()
         if not root.is_dir():
             raise ValueError(
-                "Synology-Laufwerk ist nicht eingebunden. Unter Einstellungen einen SMB-Share wählen "
-                f"oder im Template den Pfad Synology setzen, zum Beispiel {engine.SYNOLOGY_EXAMPLE}."
+                "SMB-Remotes fehlen. Unter Einstellungen einen Share wählen "
+                f"oder im Template den Path Remotes auf {engine.SYNOLOGY_EXAMPLE} setzen."
             )
-        rel = engine.clean_rel(request.args.get("path", ""), label="Synology-Ordner")
-        return jsonify(list_dirs(root, rel, label="Synology-Ordner"))
+        rel = engine.clean_rel(request.args.get("path", ""), label="SMB-Ordner")
+        return jsonify(list_dirs(root, rel, label="SMB-Ordner"))
 
     def active_target(rel: str = "") -> tuple[dict, str]:
         backend = store.require_backend()
