@@ -33,6 +33,26 @@ def test_parse_samba_mount_cfg():
     assert remotes[1]["id"] == "media"
 
 
+def test_parse_unraid_style_ip_share_names():
+    text = """
+[//192.168.0.30/backup-unraid]
+protocol="SMB"
+ip="192.168.0.30"
+path="backup-unraid"
+share="backup-unraid"
+
+[//DS918PLUS.HOME/Familien_Dokumente]
+protocol = "SMB"
+ip = "DS918PLUS.HOME"
+path = "Familien_Dokumente"
+share = "Familien_Dokumente"
+"""
+    remotes = parse_samba_mount_cfg(text)
+    assert remotes[0]["id"] == "192.168.0.30_backup-unraid"
+    assert remotes[0]["source"] == "//192.168.0.30/backup-unraid"
+    assert remotes[1]["id"] == "DS918PLUS.HOME_Familien_Dokumente"
+
+
 def test_list_synology_shares_marks_mount_and_selection(tmp_path):
     ud = tmp_path / "ud"
     ud.mkdir()

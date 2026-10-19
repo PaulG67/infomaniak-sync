@@ -482,7 +482,23 @@ function renderSettings() {
         <thead><tr><th>Share</th><th>Quelle</th><th>Mountpoint</th><th>Status</th></tr></thead>
         <tbody>${shareRows}</tbody>
       </table></div>`
-    : `<p class="hint">Keine SMB-Remotes gefunden. Unter Unraid → Unassigned Devices einen Remote-Share einrichten. Im Template die Pfade Synology (/mnt/remotes) und Unassigned Devices (/boot/config/plugins/unassigned.devices) setzen.</p>`;
+    : `<div class="banner warn">
+        <p><strong>Keine SMB-Remotes sichtbar.</strong> Force Update allein reicht nicht — die neuen Pfade müssen am Container hängen:</p>
+        <ol class="hint" style="margin:.4rem 0 0 1.1rem;padding:0">
+          <li>Docker → infomaniak-sync → <strong>Edit</strong></li>
+          <li><strong>Synology</strong> = <code>/mnt/remotes</code></li>
+          <li><strong>Unassigned Devices</strong> = <code>/boot/config/plugins/unassigned.devices</code></li>
+          <li><strong>Apply</strong>, dann diese Seite neu laden</li>
+        </ol>
+      </div>`;
+  const remotesOk = synology.remotes_ok;
+  const udOk = synology.ud_present;
+  const cfgOk = synology.ud_cfg_present;
+  const statusBits = [
+    `Remotes ${remotesOk ? "ok" : "fehlt"} (${esc(synology.remotes_root || "/synology")})`,
+    `UD-Ordner ${udOk ? "ok" : "fehlt"}`,
+    cfgOk ? `samba_mount.cfg gefunden (${synology.config_count || 0} Einträge)` : "samba_mount.cfg fehlt",
+  ];
   appEl.innerHTML = `${banners()}
     <div class="settings-stack">
       <form id="connection-form" class="card form">
@@ -519,8 +535,8 @@ function renderSettings() {
       </form>
       <form id="synology-form" class="card form">
         <h2>Synology</h2>
-        <p class="hint">SMB-Shares aus Unassigned Devices. Wähle den Share, der als Backup-Ziel dient. Quelle und Mountpoint stammen von Unraid; der Status zeigt, ob der Share eingehängt ist.</p>
-        ${synology.ud_present ? "" : `<p class="meta">Unassigned-Devices-Konfiguration ist nicht eingebunden. Im Template den Pfad auf ${esc(synology.example_ud || "/boot/config/plugins/unassigned.devices")} setzen und Edit → Apply.</p>`}
+        <p class="hint">SMB-Shares aus Unassigned Devices (wie unter Main → SMB Shares). Wähle den Share als Backup-Ziel. Quelle und Mountpoint kommen von Unraid; der Status zeigt, ob er eingehängt ist.</p>
+        <p class="meta">${statusBits.map(esc).join(" · ")}</p>
         ${synBody}
         <div class="row" style="margin-top:.75rem">
           <button type="submit" class="primary" ${shares.length ? "" : "disabled"}>Synology-Share speichern</button>

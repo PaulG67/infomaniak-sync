@@ -19,22 +19,23 @@ def _strip_quotes(value: str) -> str:
 
 
 def _mount_leaf(mountpoint: str, share: str, source: str) -> str:
+    """Unraid zeigt z. B. 192.168.0.30_backup-unraid unter /mnt/remotes/."""
     mountpoint = (mountpoint or "").replace("\\", "/").rstrip("/")
     if mountpoint:
         leaf = Path(mountpoint).name
         if leaf and leaf not in {".", ".."}:
             return leaf
-    share = (share or "").strip().strip("/")
-    if share and "/" not in share and "\\" not in share:
-        return share
-    # //HOST/SHARE → HOST_SHARE
-    src = (source or "").replace("\\", "/").strip("/")
+    # //HOST/SHARE → HOST_SHARE (wie Unassigned Devices)
+    src = (source or "").replace("\\", "/").strip()
     if src.startswith("//"):
         parts = [p for p in src[2:].split("/") if p]
         if len(parts) >= 2:
-            return f"{parts[0]}_{parts[1]}"
+            return f"{parts[0]}_{parts[-1]}"
         if parts:
             return parts[0]
+    share = (share or "").strip().strip("/")
+    if share and "/" not in share and "\\" not in share:
+        return share
     return share or "remote"
 
 
@@ -106,12 +107,17 @@ def parse_samba_mount_cfg(text: str) -> list[dict]:
     return remotes
 
 
+def ud_config_file(config_dir: Path) -> Path | None:
+    for name in ("samba_mount.cfg", "samba_mounts.cfg"):
+        path = config_dir / name
+        if path.is_file():
+            return path
+    return None
+
+
 def read_ud_remotes(config_dir: Path) -> list[dict]:
-    path = config_dir / "samba_mount.cfg"
-    if not path.is_file():
-        # ältere/alternative Schreibweise
-        path = config_dir / "samba_mounts.cfg"
-    if not path.is_file():
+    path = ud_config_file(config_dir)
+    if path is None:
         return []
     try:
         text = path.read_text(encoding="utf-8-sig", errors="replace")[:500_000]
@@ -157,8 +163,10 @@ def list_synology_shares(
     selected_id: str = "",
 ) -> dict:
     """SMB-Remotes aus UD plus sichtbare Ordner unter dem Synology-Mount."""
+    cfg_path = ud_config_file(ud_config_dir)
     configured = read_ud_remotes(ud_config_dir)
     by_id = {item["id"]: dict(item) for item in configured}
+    dir_names: list[str] = []
     if remotes_root.is_dir():
         try:
             entries = sorted(remotes_root.iterdir(), key=lambda item: item.name.lower())
@@ -169,11 +177,12 @@ def list_synology_shares(
                 continue
             if not SAFE_NAME.fullmatch(entry.name):
                 continue
+            dir_names.append(entry.name)
             if entry.name in by_id:
                 continue
             by_id[entry.name] = {
                 "id": entry.name,
-                "source": entry.name,
+                "source": f"//{entry.name.replace('_', '/', 1)}" if "_" in entry.name else entry.name,
                 "protocol": "SMB",
                 "host": "",
                 "share": entry.name,
@@ -194,12 +203,18 @@ def list_synology_shares(
                 "selected": leaf == selected_id,
             }
         )
-    available = ud_config_dir.is_dir()
+    ud_dir_ok = ud_config_dir.is_dir()
+    remotes_ok = remotes_root.is_dir()
     return {
-        "available": available or remotes_root.is_dir(),
-        "ud_present": available,
+        "available": ud_dir_ok or remotes_ok,
+        "ud_present": ud_dir_ok,
+        "ud_cfg_present": cfg_path is not None,
+        "ud_cfg_file": str(cfg_path) if cfg_path else "",
         "ud_path": str(ud_config_dir),
+        "remotes_ok": remotes_ok,
         "remotes_root": str(remotes_root),
+        "dir_count": len(dir_names),
+        "config_count": len(configured),
         "selected": selected_id,
         "shares": shares,
         "example_ud": UD_EXAMPLE,
