@@ -29,18 +29,18 @@ def test_health_and_create_job(env):
     client = create_app().test_client()
     health = client.get("/health")
     assert health.status_code == 200
-    assert health.get_json()["version"] == "1.2.3"
+    assert health.get_json()["version"] == "1.2.4"
     page = client.get("/")
     html = page.get_data(as_text=True)
-    assert "Version 1.2.3" in html
-    assert "app.js?v=1.2.3" in html
+    assert "Version 1.2.4" in html
+    assert "app.js?v=1.2.4" in html
     assert "Einstellungen" in html
     assert 'data-tab="settings"' in html
     assert 'data-tab="connection"' not in html
     assert page.headers["Cache-Control"] == "no-store"
     state = client.get("/api/state").get_json()
     assert state["share_count"] == 2
-    assert state["app_version"] == "1.2.3"
+    assert state["app_version"] == "1.2.4"
     assert "synology_ok" in state
     assert "synology" in state
     assert "shares" in state["synology"]
@@ -251,3 +251,48 @@ def test_run_requires_connection(env):
     started = client.post(f"/api/jobs/{job_id}/run", json={})
     assert started.status_code == 400
     assert "nicht eingerichtet" in started.get_json()["error"]
+
+
+def test_state_survives_incomplete_job_mappings(env):
+    app = create_app()
+    store = app.config["STORE"]
+    store.put_job(
+        {
+            "id": "broken-1",
+            "name": "Alt",
+            "mode": "upload",
+            "enabled": True,
+            "kdrive_enabled": True,
+            "synology_enabled": True,
+            "existing": "newer",
+            "conflict": "newer",
+            "transfers": 4,
+            "min_age": "",
+            "max_size": "",
+            "excludes": "",
+            "exclude_system": True,
+            "copy_links": False,
+            "create_empty_dirs": False,
+            "version_dir": "_Versionen",
+            "confirm_delete": False,
+            "confirm_root": False,
+            "compare": "size",
+            "schedule": {
+                "type": "manual",
+                "interval_minutes": 60,
+                "time": "03:00",
+                "weekday": 0,
+                "cron": "0 3 * * *",
+            },
+            "mappings": [{"local": "photos"}],
+            "created_at": "t",
+            "updated_at": "t",
+            "last_status": "",
+            "last_summary": "",
+            "next_run": None,
+        }
+    )
+    state = app.test_client().get("/api/state").get_json()
+    assert state["ok"] is True
+    names = [job["name"] for job in state["jobs"]]
+    assert "Alt" in names

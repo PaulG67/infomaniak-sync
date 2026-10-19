@@ -142,10 +142,13 @@ def _mounts_from_proc() -> set[str]:
 
 def is_path_mounted(path: Path) -> bool:
     try:
-        resolved = path.resolve()
-    except OSError:
+        resolved = path.resolve(strict=False)
+    except (OSError, RuntimeError):
         return False
-    if not resolved.is_dir():
+    try:
+        if not resolved.is_dir():
+            return False
+    except OSError:
         return False
     try:
         if resolved.is_mount():
@@ -162,66 +165,88 @@ def list_synology_shares(
     remotes_root: Path,
     selected_id: str = "",
 ) -> dict:
-    """SMB-Remotes aus UD plus sichtbare Ordner unter dem Synology-Mount."""
-    cfg_path = ud_config_file(ud_config_dir)
-    configured = read_ud_remotes(ud_config_dir)
-    by_id = {item["id"]: dict(item) for item in configured}
-    dir_names: list[str] = []
-    if remotes_root.is_dir():
-        try:
-            entries = sorted(remotes_root.iterdir(), key=lambda item: item.name.lower())
-        except OSError:
-            entries = []
-        for entry in entries:
-            if not entry.is_dir() or entry.name.startswith("."):
-                continue
-            if not SAFE_NAME.fullmatch(entry.name):
-                continue
-            dir_names.append(entry.name)
-            if entry.name in by_id:
-                continue
-            by_id[entry.name] = {
-                "id": entry.name,
-                "source": f"//{entry.name.replace('_', '/', 1)}" if "_" in entry.name else entry.name,
-                "protocol": "SMB",
-                "host": "",
-                "share": entry.name,
-                "mountpoint": f"{HOST_REMOTES}/{entry.name}",
-                "automount": False,
-                "from_config": False,
-            }
-    shares = []
-    for item in sorted(by_id.values(), key=lambda row: row["id"].lower()):
-        leaf = item["id"]
-        container_path = remotes_root / leaf
-        shares.append(
-            {
-                **item,
-                "from_config": bool(item.get("from_config", "from_config" not in item)),
-                "mounted": is_path_mounted(container_path),
-                "container_path": str(container_path),
-                "selected": leaf == selected_id,
-            }
-        )
-    ud_dir_ok = ud_config_dir.is_dir()
-    remotes_ok = remotes_root.is_dir()
-    # Nur /mnt/remotes muss eingebunden sein; UD-Config ist optional.
-    return {
-        "available": remotes_ok and bool(shares),
-        "ud_present": ud_dir_ok,
-        "ud_cfg_present": cfg_path is not None,
-        "ud_cfg_file": str(cfg_path) if cfg_path else "",
+    """SMB-Remotes aus UD plus sichtbare Ordner unter dem Remotes-Mount."""
+    empty = {
+        "available": False,
+        "ud_present": False,
+        "ud_cfg_present": False,
+        "ud_cfg_file": "",
         "ud_path": str(ud_config_dir),
-        "remotes_ok": remotes_ok,
+        "remotes_ok": False,
         "remotes_root": str(remotes_root),
-        "dir_count": len(dir_names),
-        "config_count": len(configured),
+        "dir_count": 0,
+        "config_count": 0,
         "selected": selected_id,
-        "shares": shares,
+        "shares": [],
         "example_ud": UD_EXAMPLE,
         "example_remotes": HOST_REMOTES,
-        "needs_remotes_path": not remotes_ok,
+        "needs_remotes_path": True,
     }
+    try:
+        cfg_path = ud_config_file(ud_config_dir)
+        configured = read_ud_remotes(ud_config_dir)
+        by_id = {item["id"]: dict(item) for item in configured}
+        dir_names: list[str] = []
+        if remotes_root.is_dir():
+            try:
+                entries = sorted(remotes_root.iterdir(), key=lambda item: item.name.lower())
+            except OSError:
+                entries = []
+            for entry in entries:
+                try:
+                    if entry.name.startswith(".") or not entry.is_dir():
+                        continue
+                except OSError:
+                    continue
+                if not SAFE_NAME.fullmatch(entry.name):
+                    continue
+                dir_names.append(entry.name)
+                if entry.name in by_id:
+                    continue
+                by_id[entry.name] = {
+                    "id": entry.name,
+                    "source": f"//{entry.name.replace('_', '/', 1)}" if "_" in entry.name else entry.name,
+                    "protocol": "SMB",
+                    "host": "",
+                    "share": entry.name,
+                    "mountpoint": f"{HOST_REMOTES}/{entry.name}",
+                    "automount": False,
+                    "from_config": False,
+                }
+        shares = []
+        for item in sorted(by_id.values(), key=lambda row: str(row.get("id") or "").lower()):
+            leaf = str(item.get("id") or "remote")
+            container_path = remotes_root / leaf
+            shares.append(
+                {
+                    **item,
+                    "id": leaf,
+                    "from_config": bool(item.get("from_config", "from_config" not in item)),
+                    "mounted": is_path_mounted(container_path),
+                    "container_path": str(container_path),
+                    "selected": leaf == selected_id,
+                }
+            )
+        ud_dir_ok = ud_config_dir.is_dir()
+        remotes_ok = remotes_root.is_dir()
+        return {
+            "available": remotes_ok and bool(shares),
+            "ud_present": ud_dir_ok,
+            "ud_cfg_present": cfg_path is not None,
+            "ud_cfg_file": str(cfg_path) if cfg_path else "",
+            "ud_path": str(ud_config_dir),
+            "remotes_ok": remotes_ok,
+            "remotes_root": str(remotes_root),
+            "dir_count": len(dir_names),
+            "config_count": len(configured),
+            "selected": selected_id,
+            "shares": shares,
+            "example_ud": UD_EXAMPLE,
+            "example_remotes": HOST_REMOTES,
+            "needs_remotes_path": not remotes_ok,
+        }
+    except OSError:
+        return empty
 
 
 def resolve_synology_root(remotes_root: Path, selected_id: str) -> Path:

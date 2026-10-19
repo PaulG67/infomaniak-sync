@@ -435,12 +435,12 @@ def next_occurrence(schedule: dict, now: datetime, tz: ZoneInfo) -> datetime | N
 
 
 def schedule_label(job: dict) -> str:
-    schedule = job["schedule"]
-    kind = schedule["type"]
+    schedule = job.get("schedule") if isinstance(job.get("schedule"), dict) else {}
+    kind = str(schedule.get("type") or "manual")
     if kind == "manual":
         return "nur manuell"
     if kind == "interval":
-        minutes = int(schedule["interval_minutes"])
+        minutes = int(schedule.get("interval_minutes") or 60)
         if minutes % 1440 == 0:
             days = minutes // 1440
             return f"alle {days} Tag" if days == 1 else f"alle {days} Tage"
@@ -449,10 +449,10 @@ def schedule_label(job: dict) -> str:
             return f"alle {hours} Stunde" if hours == 1 else f"alle {hours} Stunden"
         return f"alle {minutes} Minuten"
     if kind == "daily":
-        return f"täglich um {schedule['time']}"
+        return f"täglich um {schedule.get('time') or '03:00'}"
     if kind == "weekly":
-        return f"{WEEKDAYS[int(schedule['weekday'])]} um {schedule['time']}"
-    return f"Cron {schedule['cron']}"
+        return f"{WEEKDAYS[int(schedule.get('weekday') or 0)]} um {schedule.get('time') or '03:00'}"
+    return f"Cron {schedule.get('cron') or '0 3 * * *'}"
 
 
 def slugify(name: str, job_id: str) -> str:
@@ -676,43 +676,53 @@ def describe(job: dict) -> str:
     if job.get("synology_enabled"):
         targets.append("SMB")
     pairs = []
-    for mapping in job["mappings"]:
-        src = "der gesamte gemountete Inhalt" if not mapping["local"] else mapping["local"]
+    for mapping in job.get("mappings") or []:
+        local = mapping.get("local") or ""
+        src = "der gesamte gemountete Inhalt" if not local else local
         ends = []
         if job.get("kdrive_enabled", True):
-            ends.append("kDrive:" + (mapping["remote"] or "/"))
+            ends.append("kDrive:" + (mapping.get("remote") or "/"))
         if job.get("synology_enabled"):
             ends.append("SMB:" + (mapping.get("synology") or "/"))
         pairs.append(f"{src} → {' und '.join(ends)}")
-    parts = [MODE_TEXT[job["mode"]]]
+    mode = str(job.get("mode") or "upload")
+    parts = [MODE_TEXT.get(mode, mode)]
     if targets:
         parts.append("Ziele: " + ", ".join(targets) + ".")
-    if job["mode"] == "bisync":
-        parts.append(CONFLICT_TEXT[job["conflict"]])
+    if mode == "bisync":
+        parts.append(CONFLICT_TEXT.get(str(job.get("conflict") or "newer"), ""))
     else:
-        parts.append(EXISTING_TEXT[job["existing"]])
-    if job["existing"] == "version":
-        parts.append(f"Versionen liegen unter {job['version_dir']}.")
-    parts.append(f"Zeitplan: {schedule_label(job)}.")
-    parts.append("Ordner: " + "; ".join(pairs) + ".")
+        parts.append(EXISTING_TEXT.get(str(job.get("existing") or "newer"), ""))
+    if job.get("existing") == "version":
+        parts.append(f"Versionen liegen unter {job.get('version_dir') or '_Versionen'}.")
+    try:
+        parts.append(f"Zeitplan: {schedule_label(job)}.")
+    except (KeyError, TypeError, ValueError):
+        parts.append("Zeitplan: —.")
+    parts.append("Ordner: " + ("; ".join(pairs) if pairs else "—") + ".")
     if job.get("exclude_system", True):
         parts.append("System- und Temporärdateien werden ausgelassen.")
-    if job["min_age"]:
+    if job.get("min_age"):
         parts.append(f"Dateien jünger als {job['min_age']} warten bis zum nächsten Lauf.")
     block = schedule_block(job)
     if block:
         parts.append(block)
-    return " ".join(parts)
+    return " ".join(part for part in parts if part)
 
 
 def public_job(job: dict) -> dict:
     data = dict(job)
-    data["description"] = describe(job)
-    data["schedule_label"] = schedule_label(job)
+    try:
+        data["description"] = describe(job)
+    except Exception:
+        data["description"] = ""
+    try:
+        data["schedule_label"] = schedule_label(job)
+    except (KeyError, TypeError, ValueError):
+        data["schedule_label"] = "—"
     data["schedule_block"] = schedule_block(job)
-    data["bisync_ready"] = bool(job.get("mappings")) and all(
-        mapping.get("bisync_ready") for mapping in job["mappings"]
-    )
+    mappings = job.get("mappings") or []
+    data["bisync_ready"] = bool(mappings) and all(mapping.get("bisync_ready") for mapping in mappings)
     return data
 
 

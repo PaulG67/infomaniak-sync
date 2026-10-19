@@ -184,7 +184,7 @@ class Store:
                 try:
                     self.ensure_remote(name)
                     ready = self.active_conf.is_file()
-                except ValueError:
+                except (ValueError, OSError):
                     ready = False
             return {
                 "mode": "rclone",

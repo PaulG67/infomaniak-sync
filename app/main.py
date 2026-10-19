@@ -202,6 +202,13 @@ def create_app() -> Flask:
             return jsonify({"ok": False, "error": exc.description}), exc.code
         return exc
 
+    @app.errorhandler(Exception)
+    def unhandled_error(exc: Exception):
+        log.exception("Unbehandelter Fehler: %s", exc)
+        if request.path.startswith("/api/"):
+            return jsonify({"ok": False, "error": "Interner Fehler. Details stehen im Container-Log."}), 500
+        return "Interner Fehler. Details stehen im Container-Log.", 500
+
     def public_runs(limit: int = 30) -> list[dict]:
         rows = []
         for run in store.list_runs(limit):
@@ -222,7 +229,14 @@ def create_app() -> Flask:
         return rows
 
     def state() -> dict:
-        jobs = [engine.public_job(job) for job in store.list_jobs()]
+        jobs = []
+        for job in store.list_jobs():
+            try:
+                jobs.append(engine.public_job(job))
+            except Exception:
+                log.exception("Auftrag %s konnte nicht geladen werden", job.get("id") if isinstance(job, dict) else "?")
+                if isinstance(job, dict):
+                    jobs.append({**job, "description": "", "schedule_label": "—", "schedule_block": "", "bisync_ready": False})
         connection = store.connection_public()
         env_remote = os.environ.get("RCLONE_REMOTE", "").strip() or engine.RCLONE_EXAMPLE_REMOTE
         rclone_env_ready = any(item["name"] == env_remote for item in connection["remotes"])
@@ -230,6 +244,30 @@ def create_app() -> Flask:
             os.environ.get(key, "").strip() for key in ("KDRIVE_ID", "KDRIVE_USER", "KDRIVE_PASSWORD")
         )
         env_ready = rclone_env_ready or (manual_env_ready and not connection["rclone_present"])
+        try:
+            synology = remotes_mod.list_synology_shares(
+                ud_config_dir=ud_config_dir,
+                remotes_root=remotes_root,
+                selected_id=store.get("synology_share", ""),
+            )
+        except Exception:
+            log.exception("SMB-Remotes konnten nicht gelesen werden")
+            synology = {
+                "available": False,
+                "ud_present": False,
+                "ud_cfg_present": False,
+                "ud_cfg_file": "",
+                "ud_path": str(ud_config_dir),
+                "remotes_ok": remotes_root.is_dir(),
+                "remotes_root": str(remotes_root),
+                "dir_count": 0,
+                "config_count": 0,
+                "selected": store.get("synology_share", ""),
+                "shares": [],
+                "example_ud": remotes_mod.UD_EXAMPLE,
+                "example_remotes": remotes_mod.HOST_REMOTES,
+                "needs_remotes_path": not remotes_root.is_dir(),
+            }
         return {
             "ok": True,
             "now": now().isoformat(),
@@ -241,11 +279,7 @@ def create_app() -> Flask:
             "synology_remotes_root": str(remotes_root),
             "synology_ok": synology_root().is_dir(),
             "synology_example": engine.SYNOLOGY_EXAMPLE,
-            "synology": remotes_mod.list_synology_shares(
-                ud_config_dir=ud_config_dir,
-                remotes_root=remotes_root,
-                selected_id=store.get("synology_share", ""),
-            ),
+            "synology": synology,
             "app_version": APP_VERSION,
             "rclone": app.config["RCLONE"],
             "rclone_error": app.config["RCLONE_ERROR"],
