@@ -113,6 +113,8 @@ def blank_job() -> dict:
         "max_delete": 50,
         "confirm_delete": False,
         "confirm_root": False,
+        "ocr_pdf": False,
+        "ocr_languages": "deu+eng",
         "schedule": {
             "type": "manual",
             "interval_minutes": 60,
@@ -491,6 +493,12 @@ def option_signature(job: dict) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _ocr_languages(value) -> str:
+    from app.ocr import normalize_languages
+
+    return normalize_languages(value)
+
+
 def _parse_time(value: str) -> str:
     match = re.fullmatch(r"(\d{2}):(\d{2})(?::\d{2})?", str(value or "").strip())
     if not match:
@@ -845,6 +853,8 @@ def prepare_job(
         "max_delete": max_delete,
         "confirm_delete": as_bool(raw.get("confirm_delete")),
         "confirm_root": confirm_root,
+        "ocr_pdf": as_bool(raw.get("ocr_pdf")),
+        "ocr_languages": _ocr_languages(raw.get("ocr_languages")),
         "schedule": _schedule(raw.get("schedule")),
         "created_at": (old or {}).get("created_at") or aware(now, tz).isoformat(),
         "updated_at": aware(now, tz).isoformat(),
@@ -895,6 +905,9 @@ def webdav_label(job: dict) -> str:
 
 def describe(job: dict) -> str:
     parts = []
+    if job.get("ocr_pdf"):
+        langs = job.get("ocr_languages") or "deu+eng"
+        parts.append(f"PDF-OCR aktiv ({langs}): PDFs werden vor dem Übertragen durchsuchbar gemacht.")
     if job.get("kdrive_enabled", True):
         cfg = target_cfg(job, "kdrive")
         parts.append(f"{webdav_label(job)}: " + MODE_TEXT.get(cfg["mode"], cfg["mode"]))

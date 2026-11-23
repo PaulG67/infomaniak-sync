@@ -24,6 +24,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       tzdata \
       gosu \
       passwd \
+      ghostscript \
+      qpdf \
+      tesseract-ocr \
+      tesseract-ocr-deu \
+      tesseract-ocr-eng \
     && curl -fsSL https://rclone.org/install.sh | bash \
     && test -x /usr/bin/rclone \
     && /usr/bin/rclone version \

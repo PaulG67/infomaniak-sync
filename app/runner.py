@@ -14,6 +14,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from app import engine
+from app import ocr as ocr_mod
 from app.remotes import resolve_synology_root
 from app.store import Store
 
@@ -98,6 +99,8 @@ class Runner:
         effective_resync = resync or (dry_run and engine.needs_resync(job))
         if engine.needs_resync(job) and not dry_run and not resync:
             raise ValueError("Beidseitig braucht zuerst einen Erstabgleich")
+        if job.get("ocr_pdf"):
+            ocr_mod.require_ocrmypdf()
         if job.get("kdrive_enabled", True):
             self.store.require_backend(
                 remote_name=(job.get("rclone_remote") or "").strip()
@@ -259,9 +262,45 @@ class Runner:
                     handle.write("# Probelauf, es wird nichts verändert\n")
                 if resync:
                     handle.write("# Erstabgleich (rclone resync). Überschriebene Fassungen landen im Versionsordner.\n")
+                if job.get("ocr_pdf"):
+                    handle.write(
+                        f"# PDF-OCR vor dem Sync ({job.get('ocr_languages') or ocr_mod.DEFAULT_LANGUAGES})\n"
+                    )
                 for step in steps:
                     handle.write(f"# [{step['target']}] " + engine.format_command(step["argv"]) + "\n")
                 handle.write("\n")
+            if job.get("ocr_pdf"):
+                roots = [
+                    engine.local_path(self.shares_root, mapping.get("local") or "")
+                    for mapping in job.get("mappings") or []
+                ]
+                ocr_result = ocr_mod.process_roots(
+                    roots,
+                    languages=job.get("ocr_languages") or ocr_mod.DEFAULT_LANGUAGES,
+                    dry_run=dry_run,
+                    cancel_check=lambda: job["id"] in self._cancel,
+                )
+                with log_path.open("a", encoding="utf-8") as handle:
+                    handle.write("# OCR\n")
+                    for line in ocr_result["lines"]:
+                        handle.write(f"{line}\n")
+                    handle.write(
+                        f"# OCR fertig: {ocr_result['processed']} neu, "
+                        f"{ocr_result['skipped']} übersprungen, "
+                        f"{ocr_result['failed']} Fehler"
+                        + (f", {ocr_result['would']} geplant" if dry_run else "")
+                        + "\n\n"
+                    )
+                if job["id"] in self._cancel:
+                    status = "cancelled"
+                    summary = "abgebrochen"
+                    return
+                if ocr_result["failed"] and ocr_result["processed"] == 0 and ocr_result["would"] == 0:
+                    # Alle PDFs fehlgeschlagen und nichts zu tun → Lauf abbrechen
+                    if ocr_result["total"] > 0 and ocr_result["skipped"] == 0:
+                        status = "error"
+                        summary = f"OCR fehlgeschlagen ({ocr_result['failed']} Dateien)"
+                        return
             env = self.store.rclone_env()
             for index, step in enumerate(steps):
                 argv = list(step["argv"])

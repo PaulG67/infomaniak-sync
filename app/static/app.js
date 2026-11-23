@@ -276,6 +276,14 @@ function renderEdit(id) {
           <label class="inline check"><input type="checkbox" name="confirm_root" ${job.confirm_root ? "checked" : ""} /> Gesamten gemounteten Inhalt synchronisieren</label>
         </div>
       </section>
+      <section class="card form">
+        <h2 class="panel-title">PDF / OCR</h2>
+        <label class="inline check"><input type="checkbox" name="ocr_pdf" ${job.ocr_pdf ? "checked" : ""} /> PDFs vor dem Übertragen per OCR durchsuchbar machen</label>
+        <p class="hint">Erzeugt eine Textschicht. Danach kannst du Text in OpenCloud markieren und in die Zwischenablage kopieren. Schon durchsuchbare PDFs werden übersprungen.</p>
+        <div data-ocr-langs>
+          <label>OCR-Sprachen<input name="ocr_languages" value="${esc(job.ocr_languages || "deu+eng")}" spellcheck="false" placeholder="deu+eng" /><span class="hint">Tesseract-Codes, z. B. deu+eng oder deu.</span></label>
+        </div>
+      </section>
       <div class="target-grid">
         <section class="card form target-card" data-target="kdrive" id="target-kdrive">
           <div class="target-head">
@@ -591,6 +599,8 @@ function syncVisibility() {
   document.getElementById("cron-field").hidden = kind !== "cron";
   const root = [...form.querySelectorAll(".source-row [name=local]")].some((input) => input.value.trim() === "");
   document.getElementById("confirm-root-field").hidden = !root;
+  const ocrOn = !!field("ocr_pdf")?.checked;
+  form.querySelector("[data-ocr-langs]")?.toggleAttribute("hidden", !ocrOn);
   form.querySelector("#target-kdrive")?.classList.toggle("is-off", !kdriveOn);
   form.querySelector("#target-synology")?.classList.toggle("is-off", !synOn);
   form.querySelectorAll("[data-target-body=kdrive]").forEach((el) => { el.hidden = !kdriveOn; });
@@ -637,6 +647,8 @@ function readJob() {
     synology_existing: synExisting,
     confirm_delete: confirmDelete,
     confirm_root: field("confirm_root").checked,
+    ocr_pdf: !!field("ocr_pdf")?.checked,
+    ocr_languages: field("ocr_languages")?.value.trim() || "deu+eng",
     schedule: {
       type: field("schedule_type").value,
       time: field("time").value || "03:00",
