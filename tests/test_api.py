@@ -29,18 +29,18 @@ def test_health_and_create_job(env):
     client = create_app().test_client()
     health = client.get("/health")
     assert health.status_code == 200
-    assert health.get_json()["version"] == "1.3.1"
+    assert health.get_json()["version"] == "1.3.2"
     page = client.get("/")
     html = page.get_data(as_text=True)
-    assert "Version 1.3.1" in html
-    assert "app.js?v=1.3.1" in html
+    assert "Version 1.3.2" in html
+    assert "app.js?v=1.3.2" in html
     assert "Einstellungen" in html
     assert 'data-tab="settings"' in html
     assert 'data-tab="connection"' not in html
     assert page.headers["Cache-Control"] == "no-store"
     state = client.get("/api/state").get_json()
     assert state["share_count"] == 2
-    assert state["app_version"] == "1.3.1"
+    assert state["app_version"] == "1.3.2"
     assert "synology_ok" in state
     assert "synology" in state
     assert "shares" in state["synology"]
@@ -242,6 +242,7 @@ def test_managed_webdav_remote_crud_and_non_kdrive_preview(env):
     assert preview.status_code == 200, preview.get_json()
     assert "OpenCloud:Fotos" in preview.get_json()["commands"][0]
     assert "OpenCloud:" in preview.get_json()["description"]
+    assert "kdrive:" not in preview.get_json()["commands"][0]
     edited = client.post(
         "/api/webdav-remotes",
         json={
@@ -258,6 +259,51 @@ def test_managed_webdav_remote_crud_and_non_kdrive_preview(env):
     assert deleted.status_code == 200
     names = [item["name"] for item in deleted.get_json()["connection"]["remotes"]]
     assert "OpenCloud" not in names
+
+
+def test_job_remote_wins_over_manual_kdrive_mode(env):
+    """Regression: Auftrag mit OpenCloud darf nicht auf [kdrive]/config fallen."""
+    client = create_app().test_client()
+    manual = client.post(
+        "/api/connection",
+        json={
+            "mode": "manual",
+            "webdav_url": "https://260259.connect.kdrive.infomaniak.com",
+            "kdrive_user": "ada@example.com",
+            "password": "ui-secret",
+        },
+    )
+    assert manual.status_code == 200
+    assert manual.get_json()["connection"]["mode"] == "manual"
+    created = client.post(
+        "/api/webdav-remotes",
+        json={
+            "name": "OpenCloud",
+            "url": "https://cloud.example.com/remote.php/dav/files/paul",
+            "user": "paul",
+            "password": "plain-secret",
+        },
+    )
+    assert created.status_code == 200
+    preview = client.post(
+        "/api/preview",
+        json={
+            "job": {
+                "name": "BrotherScan",
+                "mappings": [{"local": "photos", "remote": "Scanner"}],
+                "rclone_remote": "OpenCloud",
+                "mode": "move",
+                "confirm_delete": True,
+            }
+        },
+    )
+    assert preview.status_code == 200, preview.get_json()
+    command = preview.get_json()["commands"][0]
+    assert "rclone move" in command
+    assert "OpenCloud:Scanner" in command
+    assert "kdrive:" not in command
+    assert "/config/rclone.conf" not in command.replace("\\", "/")
+    assert any(path.name.startswith("rclone-active") for path in env["config"].glob("rclone-active*"))
 
 
 def test_manual_connection_accepts_rclone_url_and_obscured_pass(env):

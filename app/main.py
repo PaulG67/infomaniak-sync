@@ -576,11 +576,24 @@ def create_app() -> Flask:
                     tz=tz,
                     relax_confirm=True,
                 )
-        job_remote = (job.get("rclone_remote") or "").strip() or None
-        backend = store.backend(remote_name=job_remote)
-        if backend["mode"] == "rclone" and backend["remote"]:
-            remote_name = backend["remote"]
-            config_path = backend["config_path"]
+        job_remote = (
+            (job.get("rclone_remote") or "").strip()
+            or store.get("rclone_remote", "").strip()
+            or None
+        )
+        if job.get("kdrive_enabled", True):
+            try:
+                backend = store.require_backend(remote_name=job_remote)
+                remote_name = backend["remote"]
+                config_path = backend["config_path"]
+            except ValueError:
+                backend = store.backend(remote_name=job_remote)
+                remote_name = backend.get("remote") or "kdrive"
+                config_path = backend.get("config_path") or store.conf_path
+                if not Path(config_path).is_file():
+                    config_path = store.config_dir / "rclone-local.conf"
+                    if not config_path.is_file():
+                        config_path.write_text("# local only\n", encoding="utf-8")
         else:
             remote_name = "kdrive"
             config_path = store.conf_path

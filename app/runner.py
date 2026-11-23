@@ -99,7 +99,11 @@ class Runner:
         if engine.needs_resync(job) and not dry_run and not resync:
             raise ValueError("Beidseitig braucht zuerst einen Erstabgleich")
         if job.get("kdrive_enabled", True):
-            self.store.require_backend()
+            self.store.require_backend(
+                remote_name=(job.get("rclone_remote") or "").strip()
+                or self.store.get("rclone_remote", "").strip()
+                or None
+            )
         if job.get("synology_enabled") and self.synology_for(job) is None:
             if self._remotes_root is None or not self._remotes_root.is_dir():
                 raise ValueError(
@@ -218,7 +222,11 @@ class Runner:
             if needs_versions:
                 slug = engine.slugify(job["name"], job["id"])
                 (self.store.config_dir / "versions" / slug / stamp).mkdir(parents=True, exist_ok=True)
-            job_remote = (job.get("rclone_remote") or "").strip() or None
+            job_remote = (
+                (job.get("rclone_remote") or "").strip()
+                or self.store.get("rclone_remote", "").strip()
+                or None
+            )
             if job.get("kdrive_enabled", True):
                 backend = self.store.require_backend(remote_name=job_remote)
                 remote_name = backend["remote"]

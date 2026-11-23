@@ -249,30 +249,54 @@ class Store:
         safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in (name or "remote"))[:48] or "remote"
         return self.config_dir / f"rclone-active-{safe}.conf"
 
-    def backend(self, remote_name: str | None = None) -> dict:
-        mode = self.get("connection_mode", "")
-        if not mode and (self.password_set() or self.get("kdrive_id")):
-            mode = "manual"
-        if mode == "rclone":
-            name = (remote_name or self.get("rclone_remote", "")).strip()
-            match = next((item for item in self.webdav_entries() if item["name"] == name), None)
-            ready = False
-            config_path = self.active_conf_for(name) if name else self.active_conf
-            if match:
-                try:
-                    config_path = self.ensure_remote(name)
-                    ready = config_path.is_file()
-                except (ValueError, OSError):
-                    ready = False
+    def _rclone_backend(self, name: str, match: dict | None) -> dict:
+        if match:
+            try:
+                config_path = self.ensure_remote(match["name"])
+                ready = config_path.is_file()
+            except (ValueError, OSError):
+                config_path = self.active_conf_for(match["name"])
+                ready = False
             return {
                 "mode": "rclone",
                 "config_path": config_path,
-                "remote": name if ready else "",
+                "remote": match["name"] if ready else "",
                 "pass_env": False,
                 "ready": ready,
-                "url": match["url"] if match else "",
-                "user": match["user"] if match else "",
+                "url": match.get("url") or "",
+                "user": match.get("user") or "",
             }
+        return {
+            "mode": "rclone",
+            "config_path": self.active_conf_for(name) if name else self.active_conf,
+            "remote": "",
+            "pass_env": False,
+            "ready": False,
+            "url": "",
+            "user": "",
+        }
+
+    def backend(self, remote_name: str | None = None) -> dict:
+        """Liefert das aktive rclone-Ziel.
+
+        Ein explizit gewählter Remote-Name (Auftrag) hat Vorrang vor dem globalen
+        Modus «manual» — sonst landet z. B. OpenCloud fälschlich auf [kdrive].
+        """
+        requested = (remote_name or "").strip()
+        default = self.get("rclone_remote", "").strip()
+        entries = self.webdav_entries()
+        mode = self.get("connection_mode", "")
+        if not mode and (self.password_set() or self.get("kdrive_id")):
+            mode = "manual"
+
+        if requested:
+            match = next((item for item in entries if item["name"] == requested), None)
+            return self._rclone_backend(requested, match)
+
+        if mode == "rclone":
+            match = next((item for item in entries if item["name"] == default), None) if default else None
+            return self._rclone_backend(default, match)
+
         drive_id = self.get("kdrive_id", "")
         manual = mode == "manual" or bool(drive_id) or self.password_set()
         return {
@@ -289,12 +313,12 @@ class Store:
         backend = self.backend(remote_name=remote_name)
         if backend["ready"]:
             return backend
-        if backend["mode"] == "rclone" or self.webdav_entries() or self.get("connection_mode") == "rclone":
-            chosen = (remote_name or self.get("rclone_remote", "") or RCLONE_EXAMPLE_REMOTE).strip()
-            names = [item["name"] for item in self.webdav_entries()]
+        names = [item["name"] for item in self.webdav_entries()]
+        chosen = (remote_name or self.get("rclone_remote", "") or RCLONE_EXAMPLE_REMOTE).strip()
+        if names or backend["mode"] == "rclone" or self.get("connection_mode") == "rclone":
             if names:
                 raise ValueError(
-                    f"WebDAV-Eintrag «{chosen}» fehlt. Vorhanden: {', '.join(names)}. "
+                    f"WebDAV-Eintrag «{chosen}» fehlt oder ist nicht bereit. Vorhanden: {', '.join(names)}. "
                     "Unter Einstellungen wählen oder neu anlegen."
                 )
             raise ValueError(
@@ -409,8 +433,8 @@ class Store:
             if self.get("rclone_remote") == original:
                 self.set("rclone_remote", name)
         self.ensure_remote(name)
+        self.set("connection_mode", "rclone")
         if not self.get("rclone_remote"):
-            self.set("connection_mode", "rclone")
             self.set("rclone_remote", name)
         self.set("connection_source", "ui")
         match = next((item for item in self.webdav_entries() if item["name"] == name), None)
