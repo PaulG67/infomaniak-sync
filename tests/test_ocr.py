@@ -42,6 +42,31 @@ def test_ocr_one_dry_and_skip(tmp_path, monkeypatch):
     assert ocr_one(pdf, languages="deu+eng", binary="ocrmypdf", dry_run=True) == "would_process"
 
 
+def test_ocr_preserves_mtime_so_min_age_still_applies(tmp_path, monkeypatch):
+    import os
+    import time
+
+    pdf = tmp_path / "scan.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    old = time.time() - 3600
+    os.utime(pdf, (old, old))
+
+    class Proc:
+        returncode = 0
+        stderr = ""
+        stdout = ""
+
+    def fake_run(argv, **kwargs):
+        out = Path(argv[-1])
+        out.write_bytes(b"%PDF-ocr")
+        return Proc()
+
+    monkeypatch.setattr("app.ocr.subprocess.run", fake_run)
+    assert ocr_one(pdf, languages="deu", binary="ocrmypdf") == "processed"
+    assert pdf.read_bytes() == b"%PDF-ocr"
+    assert abs(pdf.stat().st_mtime - old) < 2
+
+
 def test_process_roots_dry_run(tmp_path, monkeypatch):
     (tmp_path / "x.pdf").write_bytes(b"%PDF")
     monkeypatch.setattr("app.ocr.ocrmypdf_binary", lambda: None)

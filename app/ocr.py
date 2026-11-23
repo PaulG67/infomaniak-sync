@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -48,12 +49,19 @@ def list_pdfs(root: Path) -> list[Path]:
 
 
 def ocr_one(pdf: Path, *, languages: str, binary: str, dry_run: bool = False) -> str:
-    """OCR einer PDF. Rückgabe: processed | skipped | failed:<msg>."""
+    """OCR einer PDF. Rückgabe: processed | skipped | failed:<msg>.
+
+    Die ursprüngliche Änderungszeit bleibt erhalten, damit --min-age und --update
+    nach dem OCR nicht fälschlich greifen (sonst wirkt die Datei „brandneu“).
+    """
     languages = normalize_languages(languages)
     if dry_run:
         return "would_process"
     tmp_path: Path | None = None
     try:
+        stat = pdf.stat()
+        original_mtime = stat.st_mtime
+        original_atime = stat.st_atime
         with tempfile.NamedTemporaryFile(
             prefix=f".{pdf.stem}-ocr-",
             suffix=".pdf",
@@ -90,6 +98,10 @@ def ocr_one(pdf: Path, *, languages: str, binary: str, dry_run: bool = False) ->
                 tmp_path.unlink(missing_ok=True)
             return f"failed:{err[:300]}"
         tmp_path.replace(pdf)
+        try:
+            os.utime(pdf, (original_atime, original_mtime))
+        except OSError as exc:
+            log.warning("mtime nach OCR nicht wiederhergestellt für %s: %s", pdf, exc)
         return "processed"
     except subprocess.TimeoutExpired:
         if tmp_path and tmp_path.exists():
