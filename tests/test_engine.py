@@ -14,10 +14,12 @@ from app.engine import (
     old_stamps,
     parse_dry_run,
     parse_rclone_remotes,
+    pending_after_transfer,
     plan_summary,
     read_rclone_section,
     host_sync_script,
     prepare_job,
+    rclone_transfer_stats,
     render_filters,
     render_rclone_conf,
     render_remote_conf,
@@ -102,6 +104,30 @@ def test_upload_command_has_no_secret(tmp_path):
     assert "- **/@eaDir/**" in text
     assert "- /_Versionen/**" in text
     assert "nach WebDAV kopiert" in describe(job)
+
+
+def test_pending_when_ocr_done_but_nothing_transferred(tmp_path):
+    root = shares(tmp_path)
+    (root / "photos" / "scan.pdf").write_bytes(b"%PDF")
+    job = prepare_job(
+        payload(mode="move", confirm_delete=True, ocr_pdf=True),
+        old=None,
+        shares_root=root,
+        now=NOW,
+        tz=TZ,
+    )
+    log = """
+Transferred:   	          0 B / 0 B, -, 0 B/s, ETA -
+Checks:                 0 / 0, -, Listed 1
+Elapsed time:         0.0s
+Transferred:            0 / 0, -
+"""
+    assert rclone_transfer_stats(log)["files_done"] == 0
+    assert rclone_transfer_stats(log)["listed"] == 1
+    msg = pending_after_transfer(job, log, root, ocr_result={"processed": 1})
+    assert msg and "OCR fertig" in msg
+    (root / "photos" / "scan.pdf").unlink()
+    assert pending_after_transfer(job, log, root, ocr_result={"processed": 1}) is None
 
 
 def test_move_command_deletes_source_after_transfer(tmp_path):

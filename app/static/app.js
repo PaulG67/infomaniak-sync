@@ -8,6 +8,7 @@ const MODE = {
 };
 const STATUS = {
   ok: "erfolgreich",
+  pending: "in Arbeit",
   error: "Fehler",
   running: "läuft",
   cancelled: "abgebrochen",

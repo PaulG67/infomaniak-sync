@@ -100,6 +100,7 @@ button.ghost { background: transparent; }
   font-weight: 700;
 }
 .pill.ok { background: #e5f6ec; color: var(--ok); }
+.pill.pending { background: var(--warn-bg); color: #5c4308; }
 .pill.error, .pill.danger { background: #fdecec; color: var(--danger); }
 .pill.running { background: #e5f3f8; color: var(--accent); }
 .pill.warn { background: var(--warn-bg); color: var(--warn); }

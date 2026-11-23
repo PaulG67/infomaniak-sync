@@ -208,6 +208,7 @@ class Runner:
                 status = "cancelled"
                 summary = "abgebrochen"
                 return
+            ocr_result = None
             extra = []
             nested = engine.config_exclude(self.store.config_dir, self.shares_root)
             if nested:
@@ -348,7 +349,19 @@ class Runner:
                 actions, _total = engine.parse_dry_run(log_text, limit=-1)
                 summary = engine.plan_summary(actions)
             else:
-                summary = engine.summarize_log(log_text)
+                pending = engine.pending_after_transfer(
+                    job,
+                    log_text,
+                    self.shares_root,
+                    ocr_result=ocr_result,
+                )
+                if pending:
+                    status = "pending"
+                    summary = pending
+                    with log_path.open("a", encoding="utf-8") as handle:
+                        handle.write(f"\n# Status: in Arbeit — {pending}\n")
+                else:
+                    summary = engine.summarize_log(log_text)
         except Exception as exc:
             status = "error"
             summary = str(exc)[:500]

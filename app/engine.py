@@ -1781,6 +1781,55 @@ def summarize_log(text: str) -> str:
     return " | ".join(found[key] for key in keys if key in found)[:500]
 
 
+def rclone_transfer_stats(text: str) -> dict:
+    """Datei-Übertragungen und Listed aus rclone-Stats (NOTICE)."""
+    files_done = 0
+    files_total = 0
+    for match in re.finditer(r"(?m)^Transferred:\s+(\d+)\s*/\s*(\d+)\s*,", text or ""):
+        files_done = int(match.group(1))
+        files_total = int(match.group(2))
+    listed = 0
+    for match in re.finditer(r"Listed\s+(\d+)", text or ""):
+        listed = int(match.group(1))
+    return {"files_done": files_done, "files_total": files_total, "listed": listed}
+
+
+def source_has_files(job: dict, shares_root: Path) -> bool:
+    for mapping in job.get("mappings") or []:
+        try:
+            root = local_path(shares_root, mapping.get("local") or "")
+        except ValueError:
+            continue
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*"):
+            if path.is_file():
+                return True
+    return False
+
+
+def pending_after_transfer(
+    job: dict,
+    log_text: str,
+    shares_root: Path,
+    *,
+    ocr_result: dict | None = None,
+) -> str | None:
+    """Wenn OCR/Quellen noch warten (z. B. --min-age), Status «in Arbeit» statt erfolgreich."""
+    stats = rclone_transfer_stats(log_text)
+    if stats["files_done"] > 0:
+        return None
+    still_there = source_has_files(job, shares_root)
+    if not still_there:
+        return None
+    ocr_processed = int((ocr_result or {}).get("processed") or 0)
+    if ocr_processed > 0:
+        return "OCR fertig · Übertragung wartet (z. B. Mindestalter)"
+    if any_move_mode(job) and stats["listed"] > 0:
+        return "Noch Dateien in der Quelle · Übertragung wartet (z. B. Mindestalter)"
+    return None
+
+
 def old_stamps(names: list[str], *, now: datetime, keep_days: int, tz: ZoneInfo) -> list[str]:
     if keep_days <= 0:
         return []
