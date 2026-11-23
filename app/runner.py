@@ -93,7 +93,7 @@ class Runner:
     def start(self, job: dict, *, trigger: str, dry_run: bool = False, resync: bool = False) -> dict:
         if self.is_running(job["id"]):
             raise ValueError("Dieser Auftrag läuft bereits")
-        if engine.any_mirror_mode(job) and not job.get("confirm_delete"):
+        if engine.needs_delete_confirm(job) and not job.get("confirm_delete"):
             raise ValueError("Löschen ist für diesen Auftrag nicht bestätigt")
         effective_resync = resync or (dry_run and engine.needs_resync(job))
         if engine.needs_resync(job) and not dry_run and not resync:

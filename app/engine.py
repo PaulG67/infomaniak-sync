@@ -21,7 +21,7 @@ from croniter import croniter
 
 from app.remotes import resolve_synology_root
 
-MODES = ("upload", "mirror_up", "download", "mirror_down", "bisync")
+MODES = ("upload", "move", "mirror_up", "download", "mirror_down", "bisync")
 EXISTING = ("overwrite", "newer", "skip", "version")
 CONFLICTS = ("newer", "larger", "local", "remote", "both")
 COMPARES = ("modtime", "checksum", "size")
@@ -36,6 +36,7 @@ WEEKDAYS = ("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"
 
 MODE_TEXT = {
     "upload": "Neue und geänderte Dateien werden nach WebDAV kopiert. Am Ziel wird nichts gelöscht.",
+    "move": "Dateien werden nach WebDAV übertragen und danach lokal gelöscht.",
     "mirror_up": "WebDAV wird an Unraid angeglichen. Dateien, die lokal fehlen, werden am Ziel gelöscht.",
     "download": "Neue und geänderte Dateien werden von WebDAV nach Unraid kopiert. Lokal wird nichts gelöscht.",
     "mirror_down": "Unraid wird an WebDAV angeglichen. Dateien, die am Ziel fehlen, werden lokal gelöscht.",
@@ -80,6 +81,7 @@ DRIVE_ID = re.compile(r"^[0-9]{1,15}$")
 EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 STAMP_NAME = re.compile(r"^\d{8}-\d{6}$")
 MIRROR_MODES = {"mirror_up", "mirror_down"}
+MOVE_MODES = {"move"}
 
 
 def blank_job() -> dict:
@@ -148,6 +150,18 @@ def any_mirror_mode(job: dict) -> bool:
     if job.get("synology_enabled") and target_cfg(job, "synology")["mode"] in MIRROR_MODES:
         return True
     return False
+
+
+def any_move_mode(job: dict) -> bool:
+    if job.get("kdrive_enabled", True) and target_cfg(job, "kdrive")["mode"] in MOVE_MODES:
+        return True
+    if job.get("synology_enabled") and target_cfg(job, "synology")["mode"] in MOVE_MODES:
+        return True
+    return False
+
+
+def needs_delete_confirm(job: dict) -> bool:
+    return any_mirror_mode(job) or any_move_mode(job)
 
 
 def as_bool(value, default: bool = False) -> bool:
@@ -660,6 +674,15 @@ def prepare_job(
         raise ValueError("SMB: Synchronisationsart ungültig")
     if synology_enabled and synology_mode == "bisync":
         raise ValueError("Beidseitiger Abgleich gilt nur für WebDAV.")
+    if (
+        kdrive_enabled
+        and synology_enabled
+        and (kdrive_mode in MOVE_MODES or synology_mode in MOVE_MODES)
+    ):
+        raise ValueError(
+            "Verschieben geht nur mit einem aktiven Ziel. "
+            "Sonst fehlt die Quelldatei für das zweite Ziel."
+        )
     if kdrive_enabled and kdrive_existing not in EXISTING:
         raise ValueError("WebDAV: Umgang mit vorhandenen Dateien ungültig")
     if synology_enabled and synology_existing not in EXISTING:
@@ -774,6 +797,13 @@ def prepare_job(
         mirror_modes.add(kdrive_mode)
     if synology_enabled and synology_mode in MIRROR_MODES:
         mirror_modes.add(synology_mode)
+    uses_move = (kdrive_enabled and kdrive_mode in MOVE_MODES) or (
+        synology_enabled and synology_mode in MOVE_MODES
+    )
+    if uses_move and not as_bool(raw.get("confirm_delete")) and not relax_confirm:
+        raise ValueError(
+            "Bestätige das Löschen der Quelldateien nach dem erfolgreichen Verschieben."
+        )
     if mirror_modes and not as_bool(raw.get("confirm_delete")) and not relax_confirm:
         if "mirror_down" in mirror_modes and "mirror_up" not in mirror_modes:
             raise ValueError("Bestätige das Löschen lokaler Dateien, die auf dem Ziel fehlen.")
@@ -1015,10 +1045,10 @@ def build_commands(
             mode = kd["mode"]
             existing = kd["existing"]
             conflict = kd["conflict"]
-            src_is_local = mode in {"upload", "mirror_up", "bisync"}
+            src_is_local = mode in {"upload", "move", "mirror_up", "bisync"}
             if mode == "bisync":
                 way = "both"
-            elif mode in {"upload", "mirror_up"}:
+            elif mode in {"upload", "move", "mirror_up"}:
                 way = "up"
             else:
                 way = "down"
@@ -1028,7 +1058,7 @@ def build_commands(
             if mode == "bisync":
                 argv = ["rclone", "bisync", local_s, remote_s]
             elif src_is_local:
-                op = "copy" if mode == "upload" else "sync"
+                op = {"upload": "copy", "move": "move"}.get(mode, "sync")
                 argv = ["rclone", op, local_s, remote_s]
             else:
                 op = "copy" if mode == "download" else "sync"
@@ -1105,7 +1135,7 @@ def build_commands(
                             "--suffix-keep-extension",
                         ]
                     )
-                elif mode in {"upload", "mirror_up"}:
+                elif mode in {"upload", "move", "mirror_up"}:
                     argv.extend(
                         [
                             "--backup-dir",
@@ -1138,7 +1168,7 @@ def build_commands(
             assert synology_root is not None
             mode = syn["mode"]
             existing = syn["existing"]
-            src_is_local = mode in {"upload", "mirror_up"}
+            src_is_local = mode in {"upload", "move", "mirror_up"}
             way = "up" if src_is_local else "down"
             use_backup = existing == "version"
             syn_rel = mapping.get("synology") or ""
@@ -1148,10 +1178,15 @@ def build_commands(
                 label="SMB-Ordner",
                 must_exist=mode in {"download", "mirror_down"},
             )
-            if mode in {"upload", "mirror_up"} and not syn_path.exists() and not dry_run:
+            if mode in {"upload", "move", "mirror_up"} and not syn_path.exists() and not dry_run:
                 syn_path.mkdir(parents=True, exist_ok=True)
             syn_s = str(syn_path)
-            op = "copy" if mode in {"upload", "download"} else "sync"
+            if mode == "move":
+                op = "move"
+            elif mode in {"upload", "download"}:
+                op = "copy"
+            else:
+                op = "sync"
             if src_is_local:
                 argv = ["rclone", op, local_s, syn_s]
             else:
@@ -1184,7 +1219,7 @@ def build_commands(
                     label="SMB-Versionsordner",
                     must_exist=False,
                 )
-                if mode in {"upload", "mirror_up"}:
+                if mode in {"upload", "move", "mirror_up"}:
                     syn_backup.mkdir(parents=True, exist_ok=True)
                     argv.extend(
                         ["--backup-dir", str(syn_backup), "--suffix", leaf, "--suffix-keep-extension"]
@@ -1423,9 +1458,9 @@ def _side_states(kind: str, way: str) -> tuple[str, str]:
     if kind == "keep" and way == "remote":
         return "absent", "exists"
     if kind == "move" and way == "down":
-        return "create", "exists"
+        return "create", "delete"
     if kind == "move" and way == "up":
-        return "exists", "create"
+        return "delete", "create"
     return "absent", "absent"
 
 

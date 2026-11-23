@@ -1,6 +1,7 @@
 const MODE = {
   upload: "Nur hochladen",
-  mirror_up: "Nach kDrive angleichen",
+  move: "Verschieben (Quelle löschen)",
+  mirror_up: "Nach Ziel angleichen",
   download: "Nur herunterladen",
   mirror_down: "Nach Unraid angleichen",
   bisync: "Beidseitig",
@@ -344,7 +345,7 @@ function renderEdit(id) {
               ["version", "Alte Fassung in den Versionsordner, dann überschreiben"],
             ], job.synology_existing || job.existing || "newer")}</label>
             <div data-smb-confirm-delete>
-              <label class="inline check"><input type="checkbox" name="synology_confirm_delete" ${job.confirm_delete ? "checked" : ""} /> Löschungen für SMB bestätigen</label>
+              <label class="inline check"><input type="checkbox" name="synology_confirm_delete" ${job.confirm_delete ? "checked" : ""} /> <span data-smb-delete-label>Löschungen für SMB bestätigen</span></label>
               <p class="hint" data-smb-delete-hint></p>
             </div>
             <div id="smb-dests">${maps.map((item, index) => smbDestRow(item, index)).join("")}</div>
@@ -508,6 +509,14 @@ function isMirrorMode(mode) {
   return mode === "mirror_up" || mode === "mirror_down";
 }
 
+function isMoveMode(mode) {
+  return mode === "move";
+}
+
+function needsDeleteConfirm(mode) {
+  return isMirrorMode(mode) || isMoveMode(mode);
+}
+
 function syncVisibility() {
   const form = document.getElementById("job-form");
   if (!form) return;
@@ -519,11 +528,13 @@ function syncVisibility() {
   const kdBisync = kdMode === "bisync";
   const kdMirror = isMirrorMode(kdMode);
   const synMirror = isMirrorMode(synMode);
+  const kdConfirm = needsDeleteConfirm(kdMode);
+  const synConfirm = needsDeleteConfirm(synMode);
   form.querySelector("[data-kdrive-existing]")?.toggleAttribute("hidden", kdBisync);
   form.querySelector("[data-kdrive-conflict]")?.toggleAttribute("hidden", !kdBisync);
   form.querySelector("[data-kdrive-keep-version]")?.toggleAttribute("hidden", !kdBisync);
-  form.querySelector("[data-kdrive-confirm-delete]")?.toggleAttribute("hidden", !kdMirror);
-  form.querySelector("[data-smb-confirm-delete]")?.toggleAttribute("hidden", !synMirror);
+  form.querySelector("[data-kdrive-confirm-delete]")?.toggleAttribute("hidden", !kdConfirm);
+  form.querySelector("[data-smb-confirm-delete]")?.toggleAttribute("hidden", !synConfirm);
   const webdav = effectiveWebdav(field("rclone_remote")?.value || "");
   const peer = webdav.is_kdrive ? "kDrive" : (webdav.name || "WebDAV");
   const hint = form.querySelector("[data-webdav-hint]");
@@ -538,21 +549,39 @@ function syncVisibility() {
   form.querySelectorAll("[data-webdav-browse]").forEach((el) => {
     el.textContent = webdav.is_kdrive ? "kDrive wählen" : "Ordner wählen";
   });
-  const deleteLabel = form.querySelector("[data-webdav-delete-label]");
-  if (deleteLabel) deleteLabel.textContent = `Löschungen für ${peer} bestätigen`;
   const conflictRemote = form.querySelector("[name=kdrive_conflict] option[value=remote]");
   if (conflictRemote) conflictRemote.textContent = `${peer} gewinnt`;
   const kdHint = form.querySelector("[data-kdrive-delete-hint]");
   if (kdHint) {
-    kdHint.textContent = kdMode === "mirror_down"
-      ? `Dateien auf Unraid, die im ${peer}-Ordner fehlen, werden gelöscht.`
-      : `Dateien auf ${peer}, die im Unraid-Ordner fehlen, werden gelöscht.`;
+    if (isMoveMode(kdMode)) {
+      kdHint.textContent = `Nach erfolgreichem Übertragen nach ${peer} werden die Quelldateien auf Unraid gelöscht.`;
+    } else {
+      kdHint.textContent = kdMode === "mirror_down"
+        ? `Dateien auf Unraid, die im ${peer}-Ordner fehlen, werden gelöscht.`
+        : `Dateien auf ${peer}, die im Unraid-Ordner fehlen, werden gelöscht.`;
+    }
   }
   const synHint = form.querySelector("[data-smb-delete-hint]");
   if (synHint) {
-    synHint.textContent = synMode === "mirror_down"
-      ? "Dateien auf Unraid, die im SMB-Ordner fehlen, werden gelöscht."
-      : "Dateien auf SMB, die im Unraid-Ordner fehlen, werden gelöscht.";
+    if (isMoveMode(synMode)) {
+      synHint.textContent = "Nach erfolgreichem Übertragen nach SMB werden die Quelldateien auf Unraid gelöscht.";
+    } else {
+      synHint.textContent = synMode === "mirror_down"
+        ? "Dateien auf Unraid, die im SMB-Ordner fehlen, werden gelöscht."
+        : "Dateien auf SMB, die im Unraid-Ordner fehlen, werden gelöscht.";
+    }
+  }
+  const kdDeleteLabel = form.querySelector("[data-webdav-delete-label]");
+  if (kdDeleteLabel) {
+    kdDeleteLabel.textContent = isMoveMode(kdMode)
+      ? "Löschen der Unraid-Quelldateien bestätigen"
+      : `Löschungen für ${peer} bestätigen`;
+  }
+  const synDeleteLabel = form.querySelector("[data-smb-delete-label]");
+  if (synDeleteLabel) {
+    synDeleteLabel.textContent = isMoveMode(synMode)
+      ? "Löschen der Unraid-Quelldateien bestätigen"
+      : "Löschungen für SMB bestätigen";
   }
   document.getElementById("mirror-extra").hidden = !(kdMirror || synMirror);
   const kind = field("schedule_type").value;
@@ -580,8 +609,8 @@ function readJob() {
   const kdExisting = kdMode === "bisync" ? (keepVersion ? "version" : "overwrite") : (field("kdrive_existing")?.value || "newer");
   const synExisting = field("synology_existing")?.value || "newer";
   let confirmDelete = true;
-  if (kdriveOn && isMirrorMode(kdMode)) confirmDelete = confirmDelete && !!field("kdrive_confirm_delete")?.checked;
-  if (synOn && isMirrorMode(synMode)) confirmDelete = confirmDelete && !!field("synology_confirm_delete")?.checked;
+  if (kdriveOn && needsDeleteConfirm(kdMode)) confirmDelete = confirmDelete && !!field("kdrive_confirm_delete")?.checked;
+  if (synOn && needsDeleteConfirm(synMode)) confirmDelete = confirmDelete && !!field("synology_confirm_delete")?.checked;
   const id = form.dataset.id;
   const locals = [...form.querySelectorAll(".source-row [name=local]")];
   const remotes = [...form.querySelectorAll("#kdrive-dests [name=remote]")];

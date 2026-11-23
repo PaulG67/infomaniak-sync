@@ -104,6 +104,48 @@ def test_upload_command_has_no_secret(tmp_path):
     assert "nach WebDAV kopiert" in describe(job)
 
 
+def test_move_command_deletes_source_after_transfer(tmp_path):
+    root = shares(tmp_path)
+    with pytest.raises(ValueError, match="Löschen"):
+        prepare_job(payload(mode="move"), old=None, shares_root=root, now=NOW, tz=TZ)
+    job = prepare_job(
+        payload(mode="move", confirm_delete=True),
+        old=None,
+        shares_root=root,
+        now=NOW,
+        tz=TZ,
+    )
+    assert job["kdrive_mode"] == "move"
+    argv = build_commands(
+        job,
+        shares_root=root,
+        config_path=tmp_path / "rclone.conf",
+        filter_path=tmp_path / "filters.txt",
+        workdir_base=tmp_path / "bisync",
+        version_root=tmp_path / "versions",
+        stamp="20261012-100000",
+    )[0]["argv"]
+    assert argv[:4] == ["rclone", "move", str((root / "photos").resolve()), "kdrive:Fotos"]
+    assert "--delete-after" not in argv
+    assert "lokal gelöscht" in describe(job)
+    with pytest.raises(ValueError, match="einem aktiven Ziel"):
+        prepare_job(
+            payload(
+                mode="move",
+                confirm_delete=True,
+                kdrive_enabled=True,
+                synology_enabled=True,
+                synology_mode="upload",
+                synology_share="NAS",
+                mappings=[{"local": "photos", "remote": "Fotos", "synology": "Backup"}],
+            ),
+            old=None,
+            shares_root=root,
+            now=NOW,
+            tz=TZ,
+        )
+
+
 def test_mirror_and_bisync_flags(tmp_path):
     root = shares(tmp_path)
     mirror = prepare_job(
