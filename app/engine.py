@@ -89,6 +89,7 @@ def blank_job() -> dict:
         "kdrive_enabled": True,
         "synology_enabled": False,
         "synology_share": "",
+        "rclone_remote": "",
         "mappings": [{"local": "", "remote": "", "synology": ""}],
         "mode": "upload",
         "existing": "newer",
@@ -586,6 +587,13 @@ def prepare_job(
         if "synology_share" in raw
         else (old or {}).get("synology_share") or default_synology_share or ""
     ).strip()
+    rclone_remote = str(
+        raw.get("rclone_remote")
+        if "rclone_remote" in raw
+        else (old or {}).get("rclone_remote") or ""
+    ).strip()
+    if rclone_remote and not RCLONE_REMOTE_NAME.fullmatch(rclone_remote):
+        raise ValueError("WebDAV-Remote ist ungültig")
     if synology_enabled:
         if remotes_root is not None:
             if not remotes_root.is_dir():
@@ -692,6 +700,7 @@ def prepare_job(
         "kdrive_enabled": kdrive_enabled,
         "synology_enabled": synology_enabled,
         "synology_share": synology_share if synology_enabled else "",
+        "rclone_remote": rclone_remote if kdrive_enabled else "",
         "mappings": mappings,
         "mode": mode,
         "existing": existing,

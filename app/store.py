@@ -28,6 +28,8 @@ class Store:
     def __init__(self, config_dir: Path, external_config: Path | None = None):
         self.config_dir = config_dir
         self.external_config = external_config or Path("/rclone/rclone.conf")
+        # Original-Mount aus dem Template (oft root:600); Kopie liegt unter external_config.
+        self.host_rclone_config = Path(os.environ.get("HOST_RCLONE_MOUNT", "/rclone/rclone.conf"))
         self.config_dir.mkdir(parents=True, exist_ok=True)
         for name in ("logs", "filters", "bisync", "versions"):
             (self.config_dir / name).mkdir(parents=True, exist_ok=True)
@@ -162,33 +164,76 @@ class Store:
         except OSError:
             pass
 
+    def _rclone_source_paths(self) -> list[Path]:
+        paths: list[Path] = []
+        for path in (self.host_rclone_config, self.external_config):
+            if path and path not in paths:
+                paths.append(path)
+        return paths
+
+    def _readable_rclone_text(self) -> tuple[str, Path | None]:
+        for path in self._rclone_source_paths():
+            if not path.is_file():
+                continue
+            try:
+                return path.read_text(encoding="utf-8", errors="replace")[:1_000_000], path
+            except OSError:
+                continue
+        return "", None
+
     def webdav_entries(self) -> list[dict]:
-        path = self.external_config
-        if not path.is_file():
-            return []
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")[:1_000_000]
-        except OSError:
+        text, _ = self._readable_rclone_text()
+        if not text:
             return []
         return [item for item in parse_rclone_remotes(text) if item.get("type", "").lower() == "webdav"]
 
-    def backend(self) -> dict:
+    def refresh_rclone_config(self) -> dict:
+        """Host-rclone-Datei erneut einlesen/kopieren, damit neue WebDAV-Remotes sichtbar werden."""
+        host = self.host_rclone_config
+        dest = self.external_config
+        copied = False
+        if host.is_file() and dest != host:
+            try:
+                text = host.read_text(encoding="utf-8", errors="replace")[:1_000_000]
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                self._write_conf(dest, text)
+                copied = True
+            except OSError as exc:
+                if not dest.is_file():
+                    raise ValueError(
+                        "rclone-Datei ist nicht lesbar. Rechte prüfen oder Container neu starten. "
+                        f"({exc})"
+                    ) from exc
+        entries = self.webdav_entries()
+        return {
+            "copied": copied,
+            "source": str(host if host.is_file() else dest),
+            "count": len(entries),
+            "remotes": entries,
+        }
+
+    def active_conf_for(self, name: str) -> Path:
+        safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in (name or "remote"))[:48] or "remote"
+        return self.config_dir / f"rclone-active-{safe}.conf"
+
+    def backend(self, remote_name: str | None = None) -> dict:
         mode = self.get("connection_mode", "")
         if not mode and (self.password_set() or self.get("kdrive_id")):
             mode = "manual"
         if mode == "rclone":
-            name = self.get("rclone_remote", "")
+            name = (remote_name or self.get("rclone_remote", "")).strip()
             match = next((item for item in self.webdav_entries() if item["name"] == name), None)
             ready = False
+            config_path = self.active_conf_for(name) if name else self.active_conf
             if match:
                 try:
-                    self.ensure_remote(name)
-                    ready = self.active_conf.is_file()
+                    config_path = self.ensure_remote(name)
+                    ready = config_path.is_file()
                 except (ValueError, OSError):
                     ready = False
             return {
                 "mode": "rclone",
-                "config_path": self.active_conf,
+                "config_path": config_path,
                 "remote": name if ready else "",
                 "pass_env": False,
                 "ready": ready,
@@ -207,18 +252,25 @@ class Store:
             "user": self.get("kdrive_user", ""),
         }
 
-    def require_backend(self) -> dict:
-        backend = self.backend()
+    def require_backend(self, remote_name: str | None = None) -> dict:
+        backend = self.backend(remote_name=remote_name)
         if backend["ready"]:
             return backend
-        if backend["mode"] == "rclone":
-            if not self.external_config.is_file():
+        if backend["mode"] == "rclone" or self.webdav_entries() or self.get("connection_mode") == "rclone":
+            text, _ = self._readable_rclone_text()
+            if not text:
                 raise ValueError(
                     "rclone-Datei ist nicht eingebunden. Beispiel: "
-                    "/boot/config/plugins/rclone/.rclone.conf mit dem Eintrag [Infomaniak]"
+                    "/boot/config/plugins/rclone/.rclone.conf"
                 )
-            chosen = self.get("rclone_remote", "") or RCLONE_EXAMPLE_REMOTE
-            raise ValueError(f"WebDAV-Eintrag {chosen} steht nicht in der rclone-Datei")
+            chosen = (remote_name or self.get("rclone_remote", "") or RCLONE_EXAMPLE_REMOTE).strip()
+            names = [item["name"] for item in self.webdav_entries()]
+            if names:
+                raise ValueError(
+                    f"WebDAV-Eintrag «{chosen}» fehlt. Vorhanden: {', '.join(names)}. "
+                    "Unter Einstellungen wählen oder Remotes aktualisieren."
+                )
+            raise ValueError("Die rclone-Datei enthält keinen WebDAV-Eintrag")
         raise ValueError("kDrive-Verbindung ist nicht eingerichtet")
 
     def rclone_env(self) -> dict:
@@ -243,11 +295,21 @@ class Store:
         except OSError:
             pass
 
-    def ensure_remote(self, name: str) -> None:
-        text = self.external_config.read_text(encoding="utf-8", errors="replace")[:1_000_000]
+    def ensure_remote(self, name: str) -> Path:
+        text, _ = self._readable_rclone_text()
+        if not text:
+            raise ValueError(
+                "rclone-Datei ist nicht eingebunden. Beispiel: "
+                "/boot/config/plugins/rclone/.rclone.conf"
+            )
+        target = self.active_conf_for(name)
         digest = hashlib.sha256(f"{name}\n{text}".encode()).hexdigest()[:16]
-        if self.get("active_digest") == digest and self.get("active_remote") == name and self.active_conf.is_file():
-            return
+        marker = f"active_digest:{name}"
+        if self.get(marker) == digest and target.is_file():
+            # Kompatibilität: auch die bisherige Datei aktuell halten
+            if name == self.get("rclone_remote", ""):
+                self._write_conf(self.active_conf, target.read_text(encoding="utf-8", errors="replace"))
+            return target
         section = read_rclone_section(text, name) or {}
         if section.get("type", "").lower() != "webdav":
             raise ValueError("WebDAV-Eintrag nicht gefunden")
@@ -259,22 +321,24 @@ class Store:
             secret,
             section.get("vendor") or "other",
         )
+        self._write_conf(target, body)
         self._write_conf(self.active_conf, body)
+        self.set(marker, digest)
         self.set("active_digest", digest)
         self.set("active_remote", name)
+        return target
 
     def use_rclone_remote(self, name: str) -> None:
         name = str(name or "").strip()
-        if not self.external_config.is_file():
-            raise ValueError(
-                "rclone-Datei ist nicht eingebunden. Beispiel: "
-                "/boot/config/plugins/rclone/.rclone.conf mit dem Eintrag [Infomaniak]"
-            )
         names = [item["name"] for item in self.webdav_entries()]
         if not names:
-            raise ValueError("Die rclone-Datei enthält keinen WebDAV-Eintrag")
+            raise ValueError(
+                "Keine WebDAV-Einträge gefunden. rclone-Datei einbinden und ggf. «Remotes aktualisieren»."
+            )
         if name not in names:
-            raise ValueError("WebDAV-Eintrag nicht gefunden")
+            raise ValueError(
+                f"WebDAV-Eintrag «{name}» nicht gefunden. Vorhanden: {', '.join(names)}"
+            )
         self.ensure_remote(name)
         self.set("connection_mode", "rclone")
         self.set("rclone_remote", name)
@@ -297,14 +361,18 @@ class Store:
         backend = self.backend()
         drive_id = self.get("kdrive_id", "")
         user = self.get("kdrive_user", "")
+        remotes = self.webdav_entries()
+        _, source = self._readable_rclone_text()
         return {
             "mode": backend["mode"],
             "ready": backend["ready"],
             "rclone_remote": self.get("rclone_remote", ""),
-            "rclone_present": self.external_config.is_file(),
+            "rclone_present": bool(source) or self.external_config.is_file() or self.host_rclone_config.is_file(),
             "example_path": "/boot/config/plugins/rclone/.rclone.conf",
             "example_remote": RCLONE_EXAMPLE_REMOTE,
-            "remotes": self.webdav_entries(),
+            "remotes": remotes,
+            "remote_count": len(remotes),
+            "rclone_source": str(source) if source else "",
             "kdrive_id": drive_id,
             "kdrive_user": user,
             "password_set": self.password_set(),

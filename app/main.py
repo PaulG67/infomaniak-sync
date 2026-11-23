@@ -403,14 +403,15 @@ def create_app() -> Flask:
         rel = engine.clean_rel(request.args.get("path", ""), label="SMB-Ordner")
         return jsonify(list_dirs(root, rel, label="SMB-Ordner"))
 
-    def active_target(rel: str = "") -> tuple[dict, str]:
-        backend = store.require_backend()
+    def active_target(rel: str = "", *, remote_name: str | None = None) -> tuple[dict, str]:
+        backend = store.require_backend(remote_name=remote_name)
         return backend, engine.remote_spec(backend["remote"], rel)
 
     @app.get("/api/remote")
     def api_remote():
         rel = engine.clean_rel(request.args.get("path", ""), label="kDrive-Ordner")
-        backend, target = active_target(rel)
+        remote_name = str(request.args.get("rclone_remote") or "").strip() or None
+        backend, target = active_target(rel, remote_name=remote_name)
         code, text = probe(
             store,
             ["rclone", "lsf", target, "--dirs-only", "--max-depth", "1", "--config", str(backend["config_path"]), "--contimeout", "20s", "--timeout", "30s"],
@@ -459,7 +460,9 @@ def create_app() -> Flask:
 
     @app.post("/api/connection/test")
     def api_connection_test():
-        backend = store.require_backend()
+        data = request.get_json(silent=True) or {}
+        remote_name = str(data.get("rclone_remote") or "").strip() or None
+        backend = store.require_backend(remote_name=remote_name)
         code, text = probe(
             store,
             ["rclone", "lsf", engine.remote_spec(backend["remote"]), "--dirs-only", "--max-depth", "1", "--config", str(backend["config_path"]), "--contimeout", "20s", "--timeout", "35s"],
@@ -467,7 +470,12 @@ def create_app() -> Flask:
         )
         if code != 0:
             return jsonify({"ok": False, "error": text or "Verbindung fehlgeschlagen"}), 400
-        return jsonify({"ok": True, "directories": directory_names(text), "message": "Verbindung steht"})
+        return jsonify({"ok": True, "directories": directory_names(text), "message": "Verbindung steht", "remote": backend["remote"]})
+
+    @app.post("/api/connection/refresh-remotes")
+    def api_refresh_remotes():
+        info = store.refresh_rclone_config()
+        return jsonify({"ok": True, "connection": store.connection_public(), **info})
 
     @app.post("/api/connection/reset-env")
     def api_reset_env():
@@ -544,7 +552,8 @@ def create_app() -> Flask:
                     tz=tz,
                     relax_confirm=True,
                 )
-        backend = store.backend()
+        job_remote = (job.get("rclone_remote") or "").strip() or None
+        backend = store.backend(remote_name=job_remote)
         if backend["mode"] == "rclone" and backend["remote"]:
             remote_name = backend["remote"]
             config_path = backend["config_path"]
@@ -657,12 +666,14 @@ def create_app() -> Flask:
     @app.get("/api/jobs/<job_id>/script")
     def api_job_script(job_id: str):
         job = require_job(job_id)
-        backend = store.backend()
+        job_remote = (job.get("rclone_remote") or "").strip() or None
+        backend = store.backend(remote_name=job_remote)
         if backend.get("mode") == "rclone" and backend.get("remote"):
             remote = backend["remote"]
         else:
             remote = (
-                store.get("rclone_remote", "")
+                job_remote
+                or store.get("rclone_remote", "")
                 or os.environ.get("RCLONE_REMOTE", "")
                 or engine.RCLONE_EXAMPLE_REMOTE
             ).strip()

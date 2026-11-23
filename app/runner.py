@@ -218,12 +218,13 @@ class Runner:
             if needs_versions:
                 slug = engine.slugify(job["name"], job["id"])
                 (self.store.config_dir / "versions" / slug / stamp).mkdir(parents=True, exist_ok=True)
+            job_remote = (job.get("rclone_remote") or "").strip() or None
             if job.get("kdrive_enabled", True):
-                backend = self.store.require_backend()
+                backend = self.store.require_backend(remote_name=job_remote)
                 remote_name = backend["remote"]
                 config_path = backend["config_path"]
             else:
-                backend = self.store.backend()
+                backend = self.store.backend(remote_name=job_remote)
                 remote_name = backend.get("remote") or "kdrive"
                 config_path = backend.get("config_path") or self.store.conf_path
                 if not Path(config_path).is_file():

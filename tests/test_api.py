@@ -29,18 +29,18 @@ def test_health_and_create_job(env):
     client = create_app().test_client()
     health = client.get("/health")
     assert health.status_code == 200
-    assert health.get_json()["version"] == "1.2.8"
+    assert health.get_json()["version"] == "1.2.9"
     page = client.get("/")
     html = page.get_data(as_text=True)
-    assert "Version 1.2.8" in html
-    assert "app.js?v=1.2.8" in html
+    assert "Version 1.2.9" in html
+    assert "app.js?v=1.2.9" in html
     assert "Einstellungen" in html
     assert 'data-tab="settings"' in html
     assert 'data-tab="connection"' not in html
     assert page.headers["Cache-Control"] == "no-store"
     state = client.get("/api/state").get_json()
     assert state["share_count"] == 2
-    assert state["app_version"] == "1.2.8"
+    assert state["app_version"] == "1.2.9"
     assert "synology_ok" in state
     assert "synology" in state
     assert "shares" in state["synology"]
@@ -173,6 +173,25 @@ def test_rclone_file_is_selectable_without_second_password(env, monkeypatch):
     assert switched.status_code == 200
     assert switched.get_json()["connection"]["rclone_remote"] == "Anderer"
     assert switched.get_json()["connection"]["user"] == "bob@example.com"
+    refreshed = client.post("/api/connection/refresh-remotes", json={})
+    assert refreshed.status_code == 200
+    assert refreshed.get_json()["count"] == 2
+    assert [item["name"] for item in refreshed.get_json()["remotes"]] == ["Infomaniak", "Anderer"]
+    job_remote = client.post(
+        "/api/jobs",
+        json={
+            "name": "Zweitremote",
+            "mappings": [{"local": "photos", "remote": "Fotos"}],
+            "rclone_remote": "Anderer",
+        },
+    )
+    assert job_remote.status_code == 200
+    assert job_remote.get_json()["job"]["rclone_remote"] == "Anderer"
+    preview_other = client.post(
+        "/api/preview",
+        json={"job": {"name": "Fotos", "mappings": [{"local": "photos", "remote": "Fotos"}], "rclone_remote": "Anderer"}},
+    )
+    assert "Anderer:Fotos" in preview_other.get_json()["commands"][0]
     missing = client.post("/api/connection", json={"mode": "rclone", "rclone_remote": "Lokal"})
     assert missing.status_code == 400
     manual = client.post(

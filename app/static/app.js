@@ -189,9 +189,10 @@ function renderList() {
     const sources = job.mappings.map((item) => item.local || "/").join(", ");
     const kdMode = job.kdrive_mode || job.mode || "upload";
     const synMode = job.synology_mode || (job.mode === "bisync" ? "upload" : job.mode) || "upload";
+    const webdavName = job.rclone_remote || state.connection?.rclone_remote || "WebDAV";
     const kdriveChip = job.kdrive_enabled !== false
-      ? `<span class="target-chip on">Infomaniak · ${esc(MODE[kdMode] || kdMode)}</span>`
-      : `<span class="target-chip off">Infomaniak aus</span>`;
+      ? `<span class="target-chip on">${esc(webdavName)} · ${esc(MODE[kdMode] || kdMode)}</span>`
+      : `<span class="target-chip off">WebDAV aus</span>`;
     const smbLabel = job.synology_share ? `SMB · ${job.synology_share}` : "SMB";
     const smbChip = job.synology_enabled
       ? `<span class="target-chip on">${esc(smbLabel)} · ${esc(MODE[synMode] || synMode)}</span>`
@@ -280,8 +281,8 @@ function renderEdit(id) {
         <section class="card form target-card" data-target="kdrive" id="target-kdrive">
           <div class="target-head">
             <div>
-              <h2 class="panel-title">Infomaniak</h2>
-              <p class="hint">kDrive über WebDAV</p>
+              <h2 class="panel-title">WebDAV</h2>
+              <p class="hint">Infomaniak oder anderes rclone-WebDAV</p>
             </div>
             <label class="switch">
               <input type="checkbox" name="kdrive_enabled" ${job.kdrive_enabled !== false ? "checked" : ""} />
@@ -290,6 +291,7 @@ function renderEdit(id) {
             </label>
           </div>
           <div class="target-body" data-target-body="kdrive">
+            ${webdavSelectHtml(job.rclone_remote || "")}
             <label>Art${fieldSelect("kdrive_mode", Object.entries(MODE), job.kdrive_mode || job.mode || "upload")}</label>
             <div data-kdrive-existing>
               <label>Vorhandene Dateien${fieldSelect("kdrive_existing", [
@@ -412,6 +414,24 @@ function renderEdit(id) {
   dirty = false;
   syncVisibility();
   schedulePreview();
+}
+
+function webdavSelectHtml(selected) {
+  const remotes = state.connection?.remotes || [];
+  const globalRemote = state.connection?.rclone_remote || "";
+  const chosen = selected || globalRemote || "";
+  if (!remotes.length) {
+    return `<p class="hint">Keine WebDAV-Remotes gefunden. Unter Einstellungen die rclone-Datei einbinden oder Remotes aktualisieren.</p>`;
+  }
+  const options = remotes.map((item) => {
+    const label = item.url ? `${item.name} · ${item.url}` : item.name;
+    return `<option value="${esc(item.name)}" ${item.name === chosen ? "selected" : ""}>${esc(label)}</option>`;
+  }).join("");
+  return `<label>WebDAV-Ziel<select name="rclone_remote">
+    <option value="">Standard aus Einstellungen${globalRemote ? ` (${esc(globalRemote)})` : ""}</option>
+    ${options}
+  </select></label>
+  <p class="hint">Alle WebDAV-Einträge aus der rclone-Datei. Pro Auftrag wählbar.</p>`;
 }
 
 function sourceLabel(local) {
@@ -538,6 +558,7 @@ function readJob() {
     kdrive_enabled: kdriveOn,
     synology_enabled: synOn,
     synology_share: field("synology_share")?.value || "",
+    rclone_remote: field("rclone_remote")?.value || "",
     mappings: locals.map((input, index) => ({
       local: input.value.trim(),
       remote: remotes[index]?.value.trim() || "",
@@ -612,10 +633,19 @@ function renderSettings() {
   const selected = connection.rclone_remote && remotes.some((item) => item.name === connection.rclone_remote)
     ? connection.rclone_remote
     : "";
-  const remoteOptions = remotes.map((item) =>
-    `<option value="${esc(item.name)}" ${item.name === selected ? "selected" : ""}>${esc(item.name)}</option>`).join("");
+  const remoteRows = remotes.map((item) => `<tr class="share-row ${item.name === selected ? "selected" : ""}" data-act="pick-webdav" data-id="${esc(item.name)}">
+    <td class="share-pick"><input type="radio" name="rclone_remote" value="${esc(item.name)}" ${item.name === selected ? "checked" : ""} aria-label="${esc(item.name)}" /></td>
+    <td><strong>${esc(item.name)}</strong></td>
+    <td><span class="path">${esc(item.url || "—")}</span><div class="meta">${esc(item.user || "")}${item.vendor ? ` · ${esc(item.vendor)}` : ""}</div></td>
+  </tr>`).join("");
+  const remoteTable = remotes.length
+    ? `<div class="plan-wrap"><table class="share-table">
+        <thead><tr><th></th><th>Remote</th><th>Adresse</th></tr></thead>
+        <tbody>${remoteRows}</tbody>
+      </table></div>`
+    : `<div class="banner warn"><p>Keine WebDAV-Remotes gefunden. In der rclone-Datei einen Eintrag mit <code>type = webdav</code> anlegen, dann «Remotes aktualisieren».</p></div>`;
   const fileState = connection.rclone_present
-    ? "Die rclone-Datei ist eingebunden. Es werden die Zugangsdaten daraus verwendet, keine zweiten."
+    ? `rclone-Datei gefunden${connection.rclone_source ? ` (${connection.rclone_source})` : ""}. ${remotes.length} WebDAV-Eintrag${remotes.length === 1 ? "" : "e"}.`
     : `Die rclone-Datei ist nicht eingebunden. Im Template den Pfad setzen, zum Beispiel ${connection.example_path}.`;
   const shares = synology.shares || [];
   const shareRows = shares.map((item) => `<tr>
@@ -650,20 +680,20 @@ function renderSettings() {
   appEl.innerHTML = `${banners()}
     <div class="settings-stack">
       <form id="connection-form" class="card form">
-        <h2>Infomaniak</h2>
-        <p class="hint">Verbindung zu kDrive über die vorhandene rclone-Datei oder eigene Zugangsdaten.</p>
+        <h2>WebDAV / Infomaniak</h2>
+        <p class="hint">Vorhandene WebDAV-Remotes aus der rclone-Datei wählen (auch per Konsole angelegte) oder eigene Zugangsdaten eintragen.</p>
         <label>Verbindung${fieldSelect("mode", [
-          ["rclone", "Vorhandene rclone-Verbindung"],
+          ["rclone", "Vorhandene rclone-WebDAV-Remotes"],
           ["manual", "Eigene Zugangsdaten"],
         ], mode)}</label>
         <div id="rclone-fields">
-          <p class="hint">Datei des Unraid-rclone-Plugins, zum Beispiel <span>${esc(connection.example_path)}</span> mit dem Eintrag <strong>[${esc(connection.example_remote)}]</strong>.</p>
+          <p class="hint">Datei des Unraid-rclone-Plugins, zum Beispiel <span>${esc(connection.example_path)}</span>. Alle Einträge mit <code>type = webdav</code> erscheinen hier.</p>
           <p class="meta">${esc(fileState)}</p>
-          <label>WebDAV-Eintrag<select name="rclone_remote" ${remotes.length ? "" : "disabled"}>
-            <option value="">${remotes.length ? "Eintrag wählen" : "Keine WebDAV-Einträge"}</option>
-            ${remoteOptions}
-          </select></label>
+          ${remoteTable}
           <p class="meta" id="rclone-meta"></p>
+          <div class="row">
+            <button type="button" data-act="refresh-remotes">Remotes aktualisieren</button>
+          </div>
         </div>
         <div id="manual-fields">
           <p class="hint">Dieselben Angaben wie im rclone-Eintrag <strong>[Infomaniak]</strong>. <a href="https://www.infomaniak.com/en/support/faq/2409/connect-to-kdrive-via-webdav" target="_blank" rel="noreferrer">Infomaniak-Anleitung</a></p>
@@ -675,7 +705,7 @@ function renderSettings() {
         </div>
         <p class="meta">${esc(source)}</p>
         <div class="row">
-          <button type="submit" class="primary">Infomaniak speichern</button>
+          <button type="submit" class="primary">Verbindung speichern</button>
           <button type="button" data-act="test-connection">Verbindung testen</button>
           ${state.env_ready ? `<button type="button" data-act="reset-env">Auf Container-Parameter zurücksetzen</button>` : ""}
         </div>
@@ -703,12 +733,13 @@ function syncConnectionFields() {
   const mode = form.querySelector("[name=mode]").value;
   document.getElementById("rclone-fields").hidden = mode !== "rclone";
   document.getElementById("manual-fields").hidden = mode !== "manual";
-  const select = form.querySelector("[name=rclone_remote]");
+  const chosen = form.querySelector("[name=rclone_remote]:checked");
   const meta = document.getElementById("rclone-meta");
-  const remote = (state.connection.remotes || []).find((item) => item.name === select.value);
+  if (!meta) return;
+  const remote = (state.connection.remotes || []).find((item) => item.name === chosen?.value);
   meta.textContent = remote
-    ? `Adresse: ${remote.url || "—"} · Benutzer: ${remote.user || "—"}`
-    : "Kein WebDAV-Eintrag gewählt.";
+    ? `Gewählt: ${remote.name} · ${remote.url || "—"} · ${remote.user || "—"}`
+    : "Einen WebDAV-Eintrag wählen.";
 }
 
 function renderHistory() {
@@ -808,6 +839,12 @@ async function showBrowse(path) {
       return;
     }
     query.set("share", share);
+  }
+  if (field === "remote") {
+    const remote = document.querySelector("#job-form [name=rclone_remote]")?.value
+      || state.connection?.rclone_remote
+      || "";
+    if (remote) query.set("rclone_remote", remote);
   }
   try {
     const data = await api(`${endpoint}?${query}`);
@@ -969,14 +1006,36 @@ async function onClick(event) {
       return;
     }
     if (act === "close-modal") closeModal();
+    if (act === "pick-webdav") {
+      const radio = appEl.querySelector(`input[name=rclone_remote][value="${CSS.escape(actEl.dataset.id || "")}"]`);
+      if (radio) {
+        radio.checked = true;
+        appEl.querySelectorAll("#rclone-fields .share-row").forEach((row) => {
+          row.classList.toggle("selected", row.dataset.id === actEl.dataset.id);
+        });
+        syncConnectionFields();
+      }
+      return;
+    }
+    if (act === "refresh-remotes") {
+      const data = await api("/api/connection/refresh-remotes", { method: "POST", body: "{}" });
+      state.connection = data.connection;
+      showNote(`${data.count || 0} WebDAV-Remote${(data.count || 0) === 1 ? "" : "s"} geladen.`);
+      paint();
+      return;
+    }
     if (act === "test-connection") {
       const output = document.getElementById("test-output");
       output.hidden = false;
       output.textContent = "Prüfe …";
+      const chosen = document.querySelector("#connection-form [name=rclone_remote]:checked")?.value || "";
       try {
-        const data = await api("/api/connection/test", { method: "POST", body: "{}" });
+        const data = await api("/api/connection/test", {
+          method: "POST",
+          body: JSON.stringify(chosen ? { rclone_remote: chosen } : {}),
+        });
         const dirs = (data.directories || []).join("\n") || "(keine Ordner auf der obersten Ebene)";
-        output.textContent = `${data.message}\n${dirs}`;
+        output.textContent = `${data.message}${data.remote ? ` (${data.remote})` : ""}\n${dirs}`;
       } catch (error) {
         output.textContent = error.message;
       }
@@ -1029,8 +1088,9 @@ async function onSubmit(event) {
   if (form.id === "connection-form") {
     event.preventDefault();
     const mode = form.mode.value;
+    const chosenRemote = form.querySelector("[name=rclone_remote]:checked")?.value || "";
     const body = mode === "rclone"
-      ? { mode, rclone_remote: form.rclone_remote.value }
+      ? { mode, rclone_remote: chosenRemote }
       : {
           mode,
           webdav_url: form.webdav_url.value.trim(),
@@ -1090,6 +1150,9 @@ function onInput(event) {
     dirty = true;
     syncVisibility();
     schedulePreview();
+  }
+  if (event.target.closest("#connection-form")) {
+    syncConnectionFields();
   }
   if (event.target.name === "webdav_url") {
     const url = document.getElementById("kdrive-url");
