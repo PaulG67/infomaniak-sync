@@ -12,10 +12,14 @@ from pathlib import Path
 
 from app.engine import (
     RCLONE_EXAMPLE_REMOTE,
+    RCLONE_REMOTE_NAME,
+    annotate_webdav_remote,
     parse_rclone_remotes,
     read_rclone_section,
+    remove_rclone_section,
     render_rclone_conf,
     render_remote_conf,
+    upsert_rclone_section,
     validate_identity,
 )
 
@@ -36,6 +40,7 @@ class Store:
         self.db_path = self.config_dir / "app.db"
         self.conf_path = self.config_dir / "rclone.conf"
         self.active_conf = self.config_dir / "rclone-active.conf"
+        self.managed_conf = self.config_dir / "managed-webdav.conf"
         self.password_path = self.config_dir / "kdrive.password"
         self._lock = threading.RLock()
         self._init_db()
@@ -181,11 +186,39 @@ class Store:
                 continue
         return "", None
 
+    def _managed_text(self) -> str:
+        if not self.managed_conf.is_file():
+            return ""
+        try:
+            return self.managed_conf.read_text(encoding="utf-8", errors="replace")[:1_000_000]
+        except OSError:
+            return ""
+
     def webdav_entries(self) -> list[dict]:
+        by_name: dict[str, dict] = {}
         text, _ = self._readable_rclone_text()
-        if not text:
-            return []
-        return [item for item in parse_rclone_remotes(text) if item.get("type", "").lower() == "webdav"]
+        if text:
+            for item in parse_rclone_remotes(text):
+                if item.get("type", "").lower() != "webdav":
+                    continue
+                by_name[item["name"]] = annotate_webdav_remote(item, managed=False)
+        managed = self._managed_text()
+        if managed:
+            for item in parse_rclone_remotes(managed):
+                if item.get("type", "").lower() != "webdav":
+                    continue
+                by_name[item["name"]] = annotate_webdav_remote(item, managed=True)
+        return list(by_name.values())
+
+    def _lookup_webdav_section(self, name: str) -> tuple[dict[str, str] | None, bool]:
+        managed = read_rclone_section(self._managed_text(), name)
+        if managed and managed.get("type", "").lower() == "webdav":
+            return managed, True
+        text, _ = self._readable_rclone_text()
+        host = read_rclone_section(text, name) if text else None
+        if host and host.get("type", "").lower() == "webdav":
+            return host, False
+        return None, False
 
     def refresh_rclone_config(self) -> dict:
         """Host-rclone-Datei erneut einlesen/kopieren, damit neue WebDAV-Remotes sichtbar werden."""
@@ -257,21 +290,18 @@ class Store:
         if backend["ready"]:
             return backend
         if backend["mode"] == "rclone" or self.webdav_entries() or self.get("connection_mode") == "rclone":
-            text, _ = self._readable_rclone_text()
-            if not text:
-                raise ValueError(
-                    "rclone-Datei ist nicht eingebunden. Beispiel: "
-                    "/boot/config/plugins/rclone/.rclone.conf"
-                )
             chosen = (remote_name or self.get("rclone_remote", "") or RCLONE_EXAMPLE_REMOTE).strip()
             names = [item["name"] for item in self.webdav_entries()]
             if names:
                 raise ValueError(
                     f"WebDAV-Eintrag «{chosen}» fehlt. Vorhanden: {', '.join(names)}. "
-                    "Unter Einstellungen wählen oder Remotes aktualisieren."
+                    "Unter Einstellungen wählen oder neu anlegen."
                 )
-            raise ValueError("Die rclone-Datei enthält keinen WebDAV-Eintrag")
-        raise ValueError("kDrive-Verbindung ist nicht eingerichtet")
+            raise ValueError(
+                "Kein WebDAV-Ziel konfiguriert. Unter Einstellungen anlegen "
+                "oder die rclone-Plugin-Datei einbinden."
+            )
+        raise ValueError("WebDAV-Verbindung ist nicht eingerichtet")
 
     def rclone_env(self) -> dict:
         env = os.environ.copy()
@@ -296,23 +326,22 @@ class Store:
             pass
 
     def ensure_remote(self, name: str) -> Path:
-        text, _ = self._readable_rclone_text()
-        if not text:
-            raise ValueError(
-                "rclone-Datei ist nicht eingebunden. Beispiel: "
-                "/boot/config/plugins/rclone/.rclone.conf"
-            )
+        section, managed = self._lookup_webdav_section(name)
+        if not section:
+            host_text, _ = self._readable_rclone_text()
+            if not host_text and not self._managed_text():
+                raise ValueError(
+                    "Kein WebDAV-Ziel konfiguriert. Unter Einstellungen anlegen oder die rclone-Datei einbinden."
+                )
+            raise ValueError(f"WebDAV-Eintrag «{name}» nicht gefunden")
+        source_blob = self._managed_text() if managed else (self._readable_rclone_text()[0] or "")
         target = self.active_conf_for(name)
-        digest = hashlib.sha256(f"{name}\n{text}".encode()).hexdigest()[:16]
+        digest = hashlib.sha256(f"{name}\n{source_blob}".encode()).hexdigest()[:16]
         marker = f"active_digest:{name}"
         if self.get(marker) == digest and target.is_file():
-            # Kompatibilität: auch die bisherige Datei aktuell halten
             if name == self.get("rclone_remote", ""):
                 self._write_conf(self.active_conf, target.read_text(encoding="utf-8", errors="replace"))
             return target
-        section = read_rclone_section(text, name) or {}
-        if section.get("type", "").lower() != "webdav":
-            raise ValueError("WebDAV-Eintrag nicht gefunden")
         secret = section.get("pass") or section.get("password") or ""
         body = render_remote_conf(
             name,
@@ -333,7 +362,7 @@ class Store:
         names = [item["name"] for item in self.webdav_entries()]
         if not names:
             raise ValueError(
-                "Keine WebDAV-Einträge gefunden. rclone-Datei einbinden und ggf. «Remotes aktualisieren»."
+                "Keine WebDAV-Einträge gefunden. Unter Einstellungen anlegen oder Remotes aktualisieren."
             )
         if name not in names:
             raise ValueError(
@@ -342,6 +371,92 @@ class Store:
         self.ensure_remote(name)
         self.set("connection_mode", "rclone")
         self.set("rclone_remote", name)
+
+    def save_webdav_remote(
+        self,
+        *,
+        name: str,
+        url: str,
+        user: str,
+        password: str | None = None,
+        password_obscured: bool = False,
+        vendor: str = "other",
+        original_name: str = "",
+    ) -> dict:
+        name = str(name or "").strip()
+        original = str(original_name or "").strip() or name
+        if not RCLONE_REMOTE_NAME.fullmatch(name):
+            raise ValueError("Name ist ungültig (Buchstaben, Zahlen, ._@-)")
+        existing, _was_managed = self._lookup_webdav_section(original)
+        secret = ""
+        if password is not None and str(password) != "":
+            secret = str(password)
+            if not password_obscured:
+                secret = self._obscure_password(secret)
+        elif existing:
+            secret = existing.get("pass") or existing.get("password") or ""
+        if not secret:
+            raise ValueError("Passwort fehlt")
+        body = render_remote_conf(name, url, user, secret, vendor or (existing or {}).get("vendor") or "other")
+        text = self._managed_text()
+        if original != name:
+            text = remove_rclone_section(text, original)
+        text = upsert_rclone_section(text, name, body)
+        self._write_conf(self.managed_conf, text)
+        self.set(f"active_digest:{name}", "")
+        if original != name:
+            self.set(f"active_digest:{original}", "")
+            if self.get("rclone_remote") == original:
+                self.set("rclone_remote", name)
+        self.ensure_remote(name)
+        if not self.get("rclone_remote"):
+            self.set("connection_mode", "rclone")
+            self.set("rclone_remote", name)
+        self.set("connection_source", "ui")
+        match = next((item for item in self.webdav_entries() if item["name"] == name), None)
+        if not match:
+            raise ValueError("WebDAV-Ziel konnte nicht gespeichert werden")
+        return match
+
+    def delete_webdav_remote(self, name: str) -> None:
+        name = str(name or "").strip()
+        section, managed = self._lookup_webdav_section(name)
+        if not section:
+            raise ValueError("WebDAV-Ziel nicht gefunden")
+        if not managed:
+            raise ValueError(
+                "Dieses Ziel kommt aus der rclone-Plugin-Datei und kann hier nicht gelöscht werden. "
+                "Nur unter Einstellungen angelegte Ziele lassen sich entfernen."
+            )
+        text = remove_rclone_section(self._managed_text(), name)
+        self._write_conf(self.managed_conf, text)
+        self.set(f"active_digest:{name}", "")
+        if self.get("rclone_remote") == name:
+            remaining = [item["name"] for item in self.webdav_entries()]
+            self.set("rclone_remote", remaining[0] if remaining else "")
+        active = self.active_conf_for(name)
+        if active.is_file():
+            try:
+                active.unlink()
+            except OSError:
+                pass
+
+    def _obscure_password(self, password: str) -> str:
+        import subprocess
+
+        try:
+            proc = subprocess.run(
+                ["rclone", "obscure", password],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                return proc.stdout.strip().splitlines()[0].strip()
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        return password
 
     def write_webdav(self, drive_id: str, user: str, password: str | None, *, obscured: bool = False) -> None:
         drive_id, user = validate_identity(drive_id, user, password if password is not None else None)
@@ -367,7 +482,10 @@ class Store:
             "mode": backend["mode"],
             "ready": backend["ready"],
             "rclone_remote": self.get("rclone_remote", ""),
-            "rclone_present": bool(source) or self.external_config.is_file() or self.host_rclone_config.is_file(),
+            "rclone_present": bool(source)
+            or self.external_config.is_file()
+            or self.host_rclone_config.is_file()
+            or self.managed_conf.is_file(),
             "example_path": "/boot/config/plugins/rclone/.rclone.conf",
             "example_remote": RCLONE_EXAMPLE_REMOTE,
             "remotes": remotes,
@@ -385,7 +503,7 @@ class Store:
     def apply_env(self, drive_id: str, user: str, password: str, rclone_remote: str = "", *, force: bool = False) -> None:
         if self.get("connection_source") == "ui" and not force:
             return
-        if self.external_config.is_file():
+        if self.webdav_entries() or self._readable_rclone_text()[0]:
             names = [item["name"] for item in self.webdav_entries()]
             chosen = (rclone_remote or "").strip() or RCLONE_EXAMPLE_REMOTE
             self.set("connection_mode", "rclone")

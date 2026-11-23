@@ -8,6 +8,7 @@ from app.engine import (
     blank_job,
     build_commands,
     describe,
+    is_kdrive_url,
     kdrive_target,
     next_occurrence,
     old_stamps,
@@ -19,6 +20,7 @@ from app.engine import (
     prepare_job,
     render_filters,
     render_rclone_conf,
+    render_remote_conf,
 )
 
 TZ = ZoneInfo("Europe/Zurich")
@@ -99,7 +101,7 @@ def test_upload_command_has_no_secret(tmp_path):
     text = render_filters(job)
     assert "- **/@eaDir/**" in text
     assert "- /_Versionen/**" in text
-    assert "nach kDrive kopiert" in describe(job)
+    assert "nach WebDAV kopiert" in describe(job)
 
 
 def test_mirror_and_bisync_flags(tmp_path):
@@ -170,6 +172,23 @@ def test_old_stamps_and_conf():
     assert "pass" not in conf
     with pytest.raises(ValueError):
         render_rclone_conf("abc", "ada@example.com")
+
+
+def test_generic_webdav_remote_conf_skips_kdrive_rules():
+    body = render_remote_conf(
+        "OpenCloud",
+        "https://cloud.example.com/remote.php/dav/files/paul",
+        "paul",
+        "SECRET",
+        "other",
+    )
+    assert "[OpenCloud]" in body
+    assert "url = https://cloud.example.com/remote.php/dav/files/paul" in body
+    assert "user = paul" in body
+    assert not is_kdrive_url("https://cloud.example.com/remote.php/dav/files/paul")
+    assert is_kdrive_url("https://260259.connect.kdrive.infomaniak.com")
+    with pytest.raises(ValueError):
+        kdrive_target("https://cloud.example.com/remote.php/dav/files/paul")
 
 
 def test_kdrive_url_from_rclone_block():
@@ -368,13 +387,13 @@ def test_dry_run_table_copy_overwrite_delete():
     assert rows[0]["local"] == "photos/2024/a.jpg"
     assert rows[0]["remote"] == "Medien/Fotos/2024/a.jpg"
     assert rows[0]["kind"] == "copy"
-    assert "kopieren nach kDrive" in rows[0]["label"]
+    assert "kopieren nach WebDAV" in rows[0]["label"]
     assert rows[1]["kind"] == "overwrite"
     assert rows[1]["local"] == "photos/b.jpg"
     assert rows[2]["kind"] == "delete"
     assert rows[2]["local"] == ""
     assert rows[2]["remote"] == "Medien/Fotos/old.jpg"
-    assert "Löschen auf kDrive" in rows[2]["label"]
+    assert "Löschen auf WebDAV" in rows[2]["label"]
     assert plan_summary(rows) == "Probelauf: 1 kopieren, 1 überschreiben, 1 löschen"
 
 
@@ -398,7 +417,7 @@ def test_dry_run_download_and_bisync_direction():
     assert "kopieren nach Unraid" in rows[0]["label"]
     assert "Versionsordner" in rows[1]["label"]
     assert rows[2]["kind"] == "overwrite"
-    assert "kDrive → Unraid" in rows[2]["label"]
+    assert "WebDAV → Unraid" in rows[2]["label"]
     assert rows[3]["kind"] == "delete"
     assert rows[3]["local"] == "photos/weg.txt"
     assert rows[3]["remote"] == ""
@@ -437,7 +456,7 @@ INFO  : - Path2    Queue copy to Path1                 - /shares/Daten/users/361
     assert total == 1
     assert rows[0]["kind"] == "copy"
     assert rows[0]["direction"] == "down"
-    assert rows[0]["label"] == "Neu auf kDrive · kopieren nach Unraid"
+    assert rows[0]["label"] == "Neu auf WebDAV · kopieren nach Unraid"
     assert rows[0]["local_state"] == "create"
     assert rows[0]["remote_state"] == "exists"
     assert rows[0]["remote"] == "OpenCloud_Daten/361eed1e-a730-4693-8e98-a243a1a21399/Paul.docx"
@@ -456,7 +475,7 @@ INFO : - Path2    Do queued copies to                 - Path1
     rows, total = parse_dry_run(text)
     assert total == 1
     assert rows[0]["direction"] == "down"
-    assert rows[0]["label"] == "Neu auf kDrive · kopieren nach Unraid"
+    assert rows[0]["label"] == "Neu auf WebDAV · kopieren nach Unraid"
     assert rows[0]["local_state"] == "create"
     assert rows[0]["remote_state"] == "exists"
     assert "Unraid →" not in rows[0]["label"]
@@ -479,10 +498,10 @@ def test_colored_bisync_line_is_new_on_kdrive_not_unraid():
     )
     rows, total = parse_dry_run(text)
     assert total == 1
-    assert rows[0]["label"] == "Neu auf kDrive · kopieren nach Unraid"
+    assert rows[0]["label"] == "Neu auf WebDAV · kopieren nach Unraid"
     assert rows[0]["local_state"] == "create"
     assert rows[0]["remote_state"] == "exists"
-    assert "kopieren nach kDrive" not in rows[0]["label"]
+    assert "kopieren nach WebDAV" not in rows[0]["label"]
 
 
 def test_dry_run_upload_leaves_kdrive_only_files():

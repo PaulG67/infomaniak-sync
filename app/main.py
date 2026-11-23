@@ -409,7 +409,7 @@ def create_app() -> Flask:
 
     @app.get("/api/remote")
     def api_remote():
-        rel = engine.clean_rel(request.args.get("path", ""), label="kDrive-Ordner")
+        rel = engine.clean_rel(request.args.get("path", ""), label="WebDAV-Ordner")
         remote_name = str(request.args.get("rclone_remote") or "").strip() or None
         backend, target = active_target(rel, remote_name=remote_name)
         code, text = probe(
@@ -422,10 +422,12 @@ def create_app() -> Flask:
 
     @app.post("/api/remote/mkdir")
     def api_mkdir():
-        rel = engine.clean_rel(payload().get("path"), label="kDrive-Ordner")
+        data = payload()
+        rel = engine.clean_rel(data.get("path"), label="WebDAV-Ordner")
         if not rel:
             raise ValueError("Ordnername fehlt")
-        backend, target = active_target(rel)
+        remote_name = str(data.get("rclone_remote") or "").strip() or None
+        backend, target = active_target(rel, remote_name=remote_name)
         code, text = probe(
             store,
             ["rclone", "mkdir", target, "--config", str(backend["config_path"])],
@@ -476,6 +478,28 @@ def create_app() -> Flask:
     def api_refresh_remotes():
         info = store.refresh_rclone_config()
         return jsonify({"ok": True, "connection": store.connection_public(), **info})
+
+    @app.post("/api/webdav-remotes")
+    def api_webdav_save():
+        data = payload()
+        password = data.get("password")
+        if password is not None and str(password) == "":
+            password = None
+        remote = store.save_webdav_remote(
+            name=str(data.get("name") or ""),
+            url=str(data.get("url") or data.get("webdav_url") or ""),
+            user=str(data.get("user") or ""),
+            password=password,
+            password_obscured=engine.as_bool(data.get("password_obscured")),
+            vendor=str(data.get("vendor") or "other"),
+            original_name=str(data.get("original_name") or ""),
+        )
+        return jsonify({"ok": True, "remote": remote, "connection": store.connection_public()})
+
+    @app.delete("/api/webdav-remotes/<name>")
+    def api_webdav_delete(name: str):
+        store.delete_webdav_remote(name)
+        return jsonify({"ok": True, "connection": store.connection_public()})
 
     @app.post("/api/connection/reset-env")
     def api_reset_env():

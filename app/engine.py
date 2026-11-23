@@ -35,10 +35,10 @@ _RCLONE_SECRET_KEYS = frozenset({"pass", "password", "token", "bearer_token", "c
 WEEKDAYS = ("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag")
 
 MODE_TEXT = {
-    "upload": "Neue und geänderte Dateien werden nach kDrive kopiert. Auf kDrive wird nichts gelöscht.",
-    "mirror_up": "kDrive wird an Unraid angeglichen. Dateien, die lokal fehlen, werden auf kDrive gelöscht.",
-    "download": "Neue und geänderte Dateien werden von kDrive nach Unraid kopiert. Lokal wird nichts gelöscht.",
-    "mirror_down": "Unraid wird an kDrive angeglichen. Dateien, die auf kDrive fehlen, werden lokal gelöscht.",
+    "upload": "Neue und geänderte Dateien werden nach WebDAV kopiert. Am Ziel wird nichts gelöscht.",
+    "mirror_up": "WebDAV wird an Unraid angeglichen. Dateien, die lokal fehlen, werden am Ziel gelöscht.",
+    "download": "Neue und geänderte Dateien werden von WebDAV nach Unraid kopiert. Lokal wird nichts gelöscht.",
+    "mirror_down": "Unraid wird an WebDAV angeglichen. Dateien, die am Ziel fehlen, werden lokal gelöscht.",
     "bisync": "Beide Seiten werden abgeglichen. Änderungen laufen in beide Richtungen.",
 }
 EXISTING_TEXT = {
@@ -51,7 +51,7 @@ CONFLICT_TEXT = {
     "newer": "Bei einem Konflikt gewinnt die neuere Datei. Die ältere bleibt unter einem eigenen Namen erhalten.",
     "larger": "Bei einem Konflikt gewinnt die grössere Datei. Die andere bleibt unter einem eigenen Namen erhalten.",
     "local": "Bei einem Konflikt gewinnt die Datei auf Unraid.",
-    "remote": "Bei einem Konflikt gewinnt die Datei auf kDrive.",
+    "remote": "Bei einem Konflikt gewinnt die Datei am WebDAV-Ziel.",
     "both": "Bei einem Konflikt bleiben beide Fassungen erhalten.",
 }
 
@@ -205,6 +205,15 @@ def webdav_url(drive_id: str) -> str:
     return f"https://{drive_id}.connect.kdrive.infomaniak.com"
 
 
+def is_kdrive_url(value: str) -> bool:
+    raw = str(value or "").strip().rstrip("/")
+    if DRIVE_ID.fullmatch(raw):
+        return True
+    parts = urlsplit(raw)
+    host = (parts.hostname or "").lower()
+    return bool(re.fullmatch(r"\d{1,15}\.connect\.kdrive\.infomaniak\.com", host))
+
+
 def kdrive_target(value: str) -> tuple[str, str]:
     """kDrive-ID oder die url aus der rclone-Datei, zum Beispiel https://260259.connect.kdrive.infomaniak.com."""
     raw = str(value or "").strip().rstrip("/")
@@ -217,9 +226,38 @@ def kdrive_target(value: str) -> tuple[str, str]:
         drive_id = match.group(1)
         return drive_id, webdav_url(drive_id)
     raise ValueError(
-        "WebDAV-Adresse muss wie der url-Eintrag aussehen, "
+        "Infomaniak-Adresse muss wie der url-Eintrag aussehen, "
         "zum Beispiel https://260259.connect.kdrive.infomaniak.com"
     )
+
+
+def normalize_webdav_url(value: str) -> str:
+    """Beliebige WebDAV-URL oder Infomaniak-Drive-ID → kanonische URL."""
+    raw = str(value or "").strip().rstrip("/")
+    if not raw:
+        raise ValueError("WebDAV-Adresse fehlt")
+    if is_kdrive_url(raw):
+        _drive_id, url = kdrive_target(raw)
+        return url
+    parts = urlsplit(raw)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError(
+            "WebDAV-Adresse muss eine URL sein, zum Beispiel "
+            "https://cloud.example.com/remote.php/dav/files/user"
+        )
+    host = parts.hostname
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return urlunsplit((parts.scheme, host, parts.path or "", parts.query, ""))
+
+
+def _check_password(password: str | None) -> None:
+    if password is None:
+        return
+    if any(ch in password for ch in "\r\n\x00"):
+        raise ValueError("Passwort enthält ungültige Zeichen")
+    if len(password) > 2000:
+        raise ValueError("Passwort ist zu lang")
 
 
 def validate_identity(drive_id: str, user: str, password: str | None) -> tuple[str, str]:
@@ -227,12 +265,30 @@ def validate_identity(drive_id: str, user: str, password: str | None) -> tuple[s
     user = str(user or "").strip()
     if not EMAIL.fullmatch(user) or len(user) > 200:
         raise ValueError("Benutzer muss die E-Mail des Infomaniak-Kontos sein, wie user in der rclone-Datei")
-    if password is not None:
-        if any(ch in password for ch in "\r\n\x00"):
-            raise ValueError("Passwort enthält ungültige Zeichen")
-        if len(password) > 2000:
-            raise ValueError("Passwort ist zu lang")
+    _check_password(password)
     return drive_id, user
+
+
+def validate_webdav_user(user: str, url: str = "", password: str | None = None) -> str:
+    user = str(user or "").strip()
+    if not user or len(user) > 200:
+        raise ValueError("Benutzer fehlt oder ist ungültig")
+    if any(ch in user for ch in "\r\n\x00"):
+        raise ValueError("Benutzer enthält ungültige Zeichen")
+    if is_kdrive_url(url) and not EMAIL.fullmatch(user):
+        raise ValueError("Für Infomaniak muss der Benutzer die Konto-E-Mail sein")
+    _check_password(password)
+    return user
+
+
+def annotate_webdav_remote(item: dict, *, managed: bool = False) -> dict:
+    url = str(item.get("url") or "")
+    return {
+        **item,
+        "managed": managed,
+        "is_kdrive": is_kdrive_url(url),
+        "kind": "kdrive" if is_kdrive_url(url) else "webdav",
+    }
 
 
 def render_rclone_conf(drive_id: str, user: str, obscured_pass: str | None = None) -> str:
@@ -251,9 +307,9 @@ def render_rclone_conf(drive_id: str, user: str, obscured_pass: str | None = Non
 
 def render_remote_conf(name: str, url: str, user: str, obscured_pass: str, vendor: str = "other") -> str:
     if not RCLONE_REMOTE_NAME.fullmatch(name or ""):
-        raise ValueError("rclone-Remote ist ungültig")
-    _drive_id, url = kdrive_target(url)
-    _drive_id, user = validate_identity(_drive_id, user, obscured_pass)
+        raise ValueError("rclone-Remote-Name ist ungültig (Buchstaben, Zahlen, ._@-)")
+    url = normalize_webdav_url(url)
+    user = validate_webdav_user(user, url=url, password=obscured_pass)
     if not obscured_pass:
         raise ValueError("pass fehlt im WebDAV-Eintrag")
     vendor = (vendor or "other").strip() or "other"
@@ -267,6 +323,38 @@ def render_remote_conf(name: str, url: str, user: str, obscured_pass: str, vendo
         f"user = {user}\n"
         f"pass = {obscured_pass}\n"
     )
+
+
+def upsert_rclone_section(text: str, name: str, section_text: str) -> str:
+    """Abschnitt ersetzen oder anhängen. section_text enthält die [name]-Zeile."""
+    if not RCLONE_REMOTE_NAME.fullmatch(name or ""):
+        raise ValueError("rclone-Remote-Name ist ungültig")
+    cleaned = remove_rclone_section(text, name).rstrip()
+    body = section_text.strip() + "\n"
+    if cleaned:
+        return cleaned + "\n\n" + body
+    return body
+
+
+def remove_rclone_section(text: str, name: str) -> str:
+    if not name:
+        return text or ""
+    lines = (text or "").splitlines()
+    out: list[str] = []
+    skipping = False
+    for raw in lines:
+        stripped = raw.strip()
+        if stripped.startswith("[") and stripped.endswith("]") and len(stripped) > 2:
+            current = stripped[1:-1].strip()
+            skipping = current == name
+            if skipping:
+                continue
+        if skipping:
+            continue
+        out.append(raw)
+    while out and not out[-1].strip():
+        out.pop()
+    return "\n".join(out) + ("\n" if out else "")
 
 
 def _public_url(url: str) -> str:
@@ -546,7 +634,7 @@ def prepare_job(
     else:
         synology_enabled = as_bool((old or {}).get("synology_enabled"), False)
     if not kdrive_enabled and not synology_enabled:
-        raise ValueError("Mindestens Infomaniak oder SMB muss aktiv sein")
+        raise ValueError("Mindestens WebDAV oder SMB muss aktiv sein")
     legacy_mode = str(raw.get("mode") or (old or {}).get("mode") or "upload")
     legacy_existing = str(raw.get("existing") or (old or {}).get("existing") or "newer")
     legacy_conflict = str(raw.get("conflict") or (old or {}).get("conflict") or "newer")
@@ -567,18 +655,18 @@ def prepare_job(
     )
     synology_existing = _field("synology_existing", legacy_existing)
     if kdrive_enabled and kdrive_mode not in MODES:
-        raise ValueError("Infomaniak: Synchronisationsart ungültig")
+        raise ValueError("WebDAV: Synchronisationsart ungültig")
     if synology_enabled and synology_mode not in MODES:
         raise ValueError("SMB: Synchronisationsart ungültig")
     if synology_enabled and synology_mode == "bisync":
-        raise ValueError("Beidseitiger Abgleich gilt nur für Infomaniak.")
+        raise ValueError("Beidseitiger Abgleich gilt nur für WebDAV.")
     if kdrive_enabled and kdrive_existing not in EXISTING:
-        raise ValueError("Infomaniak: Umgang mit vorhandenen Dateien ungültig")
+        raise ValueError("WebDAV: Umgang mit vorhandenen Dateien ungültig")
     if synology_enabled and synology_existing not in EXISTING:
         raise ValueError("SMB: Umgang mit vorhandenen Dateien ungültig")
     if kdrive_enabled and kdrive_conflict not in CONFLICTS:
-        raise ValueError("Infomaniak: Konfliktregel ungültig")
-    # Anzeige / Kompatibilität: primäres Ziel Infomaniak, sonst SMB
+        raise ValueError("WebDAV: Konfliktregel ungültig")
+    # Anzeige / Kompatibilität: primäres Ziel WebDAV, sonst SMB
     mode = kdrive_mode if kdrive_enabled else synology_mode
     existing = kdrive_existing if kdrive_enabled else synology_existing
     conflict = kdrive_conflict if kdrive_enabled else "newer"
@@ -659,7 +747,7 @@ def prepare_job(
         if not isinstance(item, dict):
             raise ValueError("Ordnerpaar ungültig")
         local = clean_rel(item.get("local"), label="Unraid-Ordner")
-        remote = clean_rel(item.get("remote"), label="kDrive-Ordner") if kdrive_enabled else ""
+        remote = clean_rel(item.get("remote"), label="WebDAV-Ordner") if kdrive_enabled else ""
         synology = clean_rel(item.get("synology"), label="SMB-Ordner") if synology_enabled else ""
         if local in seen:
             raise ValueError(f"Unraid-Ordner doppelt: {local or '/'}")
@@ -740,7 +828,7 @@ def prepare_job(
     for mapping in job["mappings"]:
         if kdrive_enabled and kdrive_existing == "version" and _overlaps(mapping["remote"], prefix):
             raise ValueError(
-                "Der Versionsordner liegt im synchronisierten kDrive-Ordner. "
+                "Der Versionsordner liegt im synchronisierten WebDAV-Ordner. "
                 "Wähle einen Ordner daneben, zum Beispiel _Versionen."
             )
         if synology_enabled and synology_existing == "version" and _overlaps(mapping["synology"], prefix):
@@ -770,11 +858,16 @@ def schedule_block(job: dict) -> str:
     return "Zeitplan wartet auf den einmaligen Erstabgleich."
 
 
+def webdav_label(job: dict) -> str:
+    name = str(job.get("rclone_remote") or "").strip()
+    return name or "WebDAV"
+
+
 def describe(job: dict) -> str:
     parts = []
     if job.get("kdrive_enabled", True):
         cfg = target_cfg(job, "kdrive")
-        parts.append("Infomaniak: " + MODE_TEXT.get(cfg["mode"], cfg["mode"]))
+        parts.append(f"{webdav_label(job)}: " + MODE_TEXT.get(cfg["mode"], cfg["mode"]))
         if cfg["mode"] == "bisync":
             parts.append(CONFLICT_TEXT.get(cfg["conflict"], ""))
         else:
@@ -795,7 +888,7 @@ def describe(job: dict) -> str:
         src = "der gesamte gemountete Inhalt" if not local else local
         ends = []
         if job.get("kdrive_enabled", True):
-            ends.append("kDrive:" + (mapping.get("remote") or "/"))
+            ends.append(f"{webdav_label(job)}:" + (mapping.get("remote") or "/"))
         if job.get("synology_enabled"):
             share = (job.get("synology_share") or "").strip()
             sub = (mapping.get("synology") or "").strip("/")
@@ -1272,8 +1365,8 @@ def _join_root(root: str, rel: str) -> str:
     return f"{root}/{rel}" if root else rel
 
 
-def _peer_name(target: str) -> str:
-    return "SMB" if target == "synology" else "kDrive"
+def _peer_name(target: str, remote_label: str = "WebDAV") -> str:
+    return "SMB" if target == "synology" else (remote_label or "WebDAV")
 
 
 def _dry_label(kind: str, direction: str, version: bool, target: str = "kdrive") -> str:
@@ -1415,7 +1508,7 @@ def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
                 "kind": kind,
                 "direction": way,
                 "target": target,
-                "target_label": "SMB" if target == "synology" else "Infomaniak",
+                "target_label": "SMB" if target == "synology" else "WebDAV",
                 "label": label or _dry_label(kind, way, version, target),
             }
         )
@@ -1424,17 +1517,17 @@ def parse_dry_run(text: str, limit: int = 400) -> tuple[list[dict], int]:
         nonlocal bisync_seen
         bisync_seen = True
         if what == "new" and side == "2":
-            add("copy", path, "down", "Neu auf kDrive · kopieren nach Unraid")
+            add("copy", path, "down", "Neu auf WebDAV · kopieren nach Unraid")
         elif what == "new" and side == "1":
-            add("copy", path, "up", "Neu auf Unraid · kopieren nach kDrive")
+            add("copy", path, "up", "Neu auf Unraid · kopieren nach WebDAV")
         elif what == "newer" and side == "2":
-            add("overwrite", path, "down", "kDrive ist neuer · kDrive → Unraid")
+            add("overwrite", path, "down", "WebDAV ist neuer · WebDAV → Unraid")
         elif what == "newer" and side == "1":
-            add("overwrite", path, "up", "Unraid ist neuer · Unraid → kDrive")
+            add("overwrite", path, "up", "Unraid ist neuer · Unraid → WebDAV")
         elif what == "deleted" and side == "2":
-            add("delete", path, "local", "Auf kDrive gelöscht · löschen auf Unraid")
+            add("delete", path, "local", "Auf WebDAV gelöscht · löschen auf Unraid")
         elif what == "deleted" and side == "1":
-            add("delete", path, "remote", "Auf Unraid gelöscht · löschen auf kDrive")
+            add("delete", path, "remote", "Auf Unraid gelöscht · löschen auf WebDAV")
 
     def take_bisync(text: str) -> bool:
         matched_change = _BISYNC_CHANGE.search(_plain(text))

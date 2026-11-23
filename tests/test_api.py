@@ -29,18 +29,18 @@ def test_health_and_create_job(env):
     client = create_app().test_client()
     health = client.get("/health")
     assert health.status_code == 200
-    assert health.get_json()["version"] == "1.2.9"
+    assert health.get_json()["version"] == "1.3.0"
     page = client.get("/")
     html = page.get_data(as_text=True)
-    assert "Version 1.2.9" in html
-    assert "app.js?v=1.2.9" in html
+    assert "Version 1.3.0" in html
+    assert "app.js?v=1.3.0" in html
     assert "Einstellungen" in html
     assert 'data-tab="settings"' in html
     assert 'data-tab="connection"' not in html
     assert page.headers["Cache-Control"] == "no-store"
     state = client.get("/api/state").get_json()
     assert state["share_count"] == 2
-    assert state["app_version"] == "1.2.9"
+    assert state["app_version"] == "1.3.0"
     assert "synology_ok" in state
     assert "synology" in state
     assert "shares" in state["synology"]
@@ -154,6 +154,8 @@ def test_rclone_file_is_selectable_without_second_password(env, monkeypatch):
     assert state["connection"]["ready"] is True
     assert state["connection"]["rclone_remote"] == "Infomaniak"
     assert [item["name"] for item in state["connection"]["remotes"]] == ["Infomaniak", "Anderer"]
+    assert state["connection"]["remotes"][0]["is_kdrive"] is True
+    assert state["connection"]["remotes"][1]["is_kdrive"] is True
     blob = str(state)
     assert "SECRET-ONE" not in blob
     assert "SECRET-TWO" not in blob
@@ -207,6 +209,55 @@ def test_rclone_file_is_selectable_without_second_password(env, monkeypatch):
     assert body["mode"] == "rclone"
     assert body["rclone_remote"] == "Infomaniak"
     assert "ui-secret" not in str(body)
+
+
+def test_managed_webdav_remote_crud_and_non_kdrive_preview(env):
+    client = create_app().test_client()
+    created = client.post(
+        "/api/webdav-remotes",
+        json={
+            "name": "OpenCloud",
+            "url": "https://cloud.example.com/remote.php/dav/files/paul",
+            "user": "paul",
+            "password": "plain-secret",
+        },
+    )
+    assert created.status_code == 200, created.get_json()
+    remote = created.get_json()["remote"]
+    assert remote["name"] == "OpenCloud"
+    assert remote["is_kdrive"] is False
+    assert remote["managed"] is True
+    assert remote["kind"] == "webdav"
+    assert created.get_json()["connection"]["rclone_remote"] == "OpenCloud"
+    preview = client.post(
+        "/api/preview",
+        json={
+            "job": {
+                "name": "OC",
+                "mappings": [{"local": "photos", "remote": "Fotos"}],
+                "rclone_remote": "OpenCloud",
+            }
+        },
+    )
+    assert preview.status_code == 200, preview.get_json()
+    assert "OpenCloud:Fotos" in preview.get_json()["commands"][0]
+    assert "OpenCloud:" in preview.get_json()["description"]
+    edited = client.post(
+        "/api/webdav-remotes",
+        json={
+            "name": "OpenCloud",
+            "original_name": "OpenCloud",
+            "url": "https://cloud.example.com/remote.php/dav/files/paul",
+            "user": "paul2",
+            "password": "",
+        },
+    )
+    assert edited.status_code == 200
+    assert edited.get_json()["remote"]["user"] == "paul2"
+    deleted = client.delete("/api/webdav-remotes/OpenCloud")
+    assert deleted.status_code == 200
+    names = [item["name"] for item in deleted.get_json()["connection"]["remotes"]]
+    assert "OpenCloud" not in names
 
 
 def test_manual_connection_accepts_rclone_url_and_obscured_pass(env):
